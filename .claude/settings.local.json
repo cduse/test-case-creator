@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter --version)",
+      "Bash(npm --version)",
+      "Bash(npx expo *)",
+      "Bash(npm install *)",
+      "Bash(node scripts/create-assets.js)",
+      "Bash(git init *)",
+      "Bash(git add *)"
+    ]
+  }
+}
