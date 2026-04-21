@@ -69,6 +69,71 @@ export async function deleteTestCase(id: string): Promise<void> {
   await AsyncStorage.setItem(TEST_CASES_KEY, JSON.stringify(cases.filter(tc => tc.id !== id)));
 }
 
+export function buildAutomationExport(profile: AppProfile, cases: TestCase[]): object {
+  const byFeature: Record<string, number> = {};
+  const byUserType: Record<string, number> = {};
+  const byPriority: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+
+  cases.forEach(tc => {
+    if (tc.feature) byFeature[tc.feature] = (byFeature[tc.feature] ?? 0) + 1;
+    if (tc.userType) byUserType[tc.userType] = (byUserType[tc.userType] ?? 0) + 1;
+    const p = tc.priority ?? 'medium';
+    byPriority[p] = (byPriority[p] ?? 0) + 1;
+  });
+
+  return {
+    meta: {
+      exportVersion: '1.0',
+      exportedAt: new Date().toISOString(),
+      tool: 'Test Case Creator',
+      purpose: 'Automation regression suite',
+    },
+    appContext: {
+      name: profile.name,
+      description: profile.description,
+      userTypes: profile.userTypes.map(ut => ({
+        name: ut.name,
+        description: ut.description,
+      })),
+      features: profile.features.map(f => ({
+        name: f.name,
+        description: f.description,
+        flow: f.steps,
+      })),
+      qaContextSummary: profile.contextSummary ?? null,
+    },
+    testSuite: {
+      totalCount: cases.length,
+      summary: { byFeature, byUserType, byPriority },
+      testCases: cases.map((tc, index) => ({
+        id: `TC-${String(index + 1).padStart(3, '0')}`,
+        internalId: tc.id,
+        title: tc.title,
+        description: tc.description,
+        feature: tc.feature,
+        userType: tc.userType ?? null,
+        priority: tc.priority ?? 'medium',
+        testType: tc.testType ?? 'regression',
+        automationStatus: tc.automationStatus ?? 'pending',
+        preconditions: tc.preconditions,
+        steps: tc.steps.map(step => ({
+          stepNumber: step.order,
+          action: step.action,
+          expectedResult: step.expectedResult,
+          automationHint: step.automationHint ?? null,
+        })),
+        expectedResult: tc.expectedResult,
+        dataRequirements: tc.dataRequirements ?? [],
+        tags: tc.tags,
+        metadata: {
+          voiceInput: tc.voiceInput ?? null,
+          createdAt: tc.createdAt,
+        },
+      })),
+    },
+  };
+}
+
 export function formatTestCasesAsText(cases: TestCase[], appName: string): string {
   let output = `# Regression Suite — ${appName}\nGenerated: ${new Date().toLocaleDateString()}\n\n`;
 

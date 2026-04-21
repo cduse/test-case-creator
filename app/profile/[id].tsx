@@ -5,7 +5,9 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { getProfile, getTestCases, deleteTestCase, saveProfile, formatTestCasesAsText } from '../../services/storage';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import { getProfile, getTestCases, deleteTestCase, saveProfile, formatTestCasesAsText, buildAutomationExport } from '../../services/storage';
 import { generateContextSummary, hasApiKey } from '../../services/openai';
 import { AppProfile, TestCase } from '../../types';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../constants/theme';
@@ -94,10 +96,29 @@ export default function ProfileDetailScreen() {
     ]);
   }
 
-  async function handleExport() {
+  async function handleExportText() {
     if (!profile || testCases.length === 0) return;
     const text = formatTestCasesAsText(testCases, profile.name);
     await Share.share({ message: text, title: `${profile.name} - Test Cases` });
+  }
+
+  async function handleExportJson() {
+    if (!profile || testCases.length === 0) return;
+    try {
+      const payload = buildAutomationExport(profile, testCases);
+      const json = JSON.stringify(payload, null, 2);
+      const fileName = `${profile.name.replace(/\s+/g, '_')}_automation_export.json`;
+      const fileUri = FileSystem.cacheDirectory + fileName;
+      await FileSystem.writeAsStringAsync(fileUri, json, { encoding: FileSystem.EncodingType.UTF8 });
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(fileUri, { mimeType: 'application/json', dialogTitle: `Export ${profile.name}` });
+      } else {
+        Alert.alert('Sharing not available', 'Cannot share files on this device.');
+      }
+    } catch (e: any) {
+      Alert.alert('Export Failed', e.message);
+    }
   }
 
   if (!profile) {
@@ -189,11 +210,14 @@ export default function ProfileDetailScreen() {
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Test Cases ({testCases.length})</Text>
             <View style={styles.tcActions}>
-              {testCases.length > 0 && (
-                <TouchableOpacity style={styles.exportBtn} onPress={handleExport}>
-                  <Text style={styles.exportBtnText}>Export</Text>
+              {testCases.length > 0 && (<>
+                <TouchableOpacity style={styles.exportBtn} onPress={handleExportJson}>
+                  <Text style={styles.exportBtnText}>⬇ JSON</Text>
                 </TouchableOpacity>
-              )}
+                <TouchableOpacity style={styles.exportBtn} onPress={handleExportText}>
+                  <Text style={styles.exportBtnText}>📄 Text</Text>
+                </TouchableOpacity>
+              </>)}
               <TouchableOpacity
                 style={styles.newTcBtn}
                 onPress={() => router.push({ pathname: '/testcase/create', params: { profileId: id } })}

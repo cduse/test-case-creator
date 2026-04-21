@@ -6,9 +6,26 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
-import { getTestCase, getProfile, deleteTestCase, formatTestCasesAsText } from '../../services/storage';
-import { TestCase, AppProfile } from '../../types';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import { getTestCase, getProfile, deleteTestCase, formatTestCasesAsText, buildAutomationExport } from '../../services/storage';
+import { TestCase, AppProfile, Priority, TestType } from '../../types';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../constants/theme';
+
+const PRIORITY_COLOR: Record<Priority, string> = {
+  critical: '#EF4444',
+  high: '#F59E0B',
+  medium: '#6366F1',
+  low: '#94A3B8',
+};
+
+const TYPE_COLOR: Record<TestType, string> = {
+  regression: '#10B981',
+  smoke: '#F59E0B',
+  sanity: '#6366F1',
+  functional: '#3B82F6',
+  negative: '#EF4444',
+};
 
 function Tag({ label, color }: { label: string; color: string }) {
   return (
@@ -18,7 +35,7 @@ function Tag({ label, color }: { label: string; color: string }) {
   );
 }
 
-function StepRow({ step }: { step: { order: number; action: string; expectedResult: string } }) {
+function StepRow({ step }: { step: TestCase['steps'][number] }) {
   return (
     <View style={styles.stepCard}>
       <View style={styles.stepHeader}>
@@ -31,6 +48,12 @@ function StepRow({ step }: { step: { order: number; action: string; expectedResu
         <View style={styles.expectedRow}>
           <Text style={styles.expectedLabel}>Expected: </Text>
           <Text style={styles.expectedText}>{step.expectedResult}</Text>
+        </View>
+      ) : null}
+      {step.automationHint ? (
+        <View style={styles.hintRow}>
+          <Text style={styles.hintLabel}>🤖 Hint: </Text>
+          <Text style={styles.hintText}>{step.automationHint}</Text>
         </View>
       ) : null}
     </View>
@@ -66,6 +89,25 @@ export default function TestCaseDetailScreen() {
     await Share.share({ message: text, title: testCase.title });
   }
 
+  async function handleExportJson() {
+    if (!testCase || !profile) return;
+    try {
+      const payload = buildAutomationExport(profile, [testCase]);
+      const json = JSON.stringify(payload, null, 2);
+      const fileName = `${testCase.title.replace(/\s+/g, '_').substring(0, 40)}.json`;
+      const fileUri = FileSystem.cacheDirectory + fileName;
+      await FileSystem.writeAsStringAsync(fileUri, json, { encoding: FileSystem.EncodingType.UTF8 });
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(fileUri, { mimeType: 'application/json', dialogTitle: 'Export Test Case' });
+      } else {
+        Alert.alert('Sharing not available', 'Cannot share files on this device.');
+      }
+    } catch (e: any) {
+      Alert.alert('Export Failed', e.message);
+    }
+  }
+
   async function handleDelete() {
     if (!testCase) return;
     Alert.alert('Delete', `Delete "${testCase.title}"?`, [
@@ -88,17 +130,22 @@ export default function TestCaseDetailScreen() {
     );
   }
 
+  const priority = testCase.priority ?? 'medium';
+  const testType = testCase.testType ?? 'regression';
+
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.header}>
           <Text style={styles.title}>{testCase.title}</Text>
           <View style={styles.tags}>
+            <Tag label={priority.toUpperCase()} color={PRIORITY_COLOR[priority]} />
+            <Tag label={testType} color={TYPE_COLOR[testType]} />
             {testCase.userType && <Tag label={testCase.userType} color={Colors.primary} />}
             {testCase.feature && <Tag label={testCase.feature} color={Colors.secondary} />}
-            {testCase.tags.filter(t => t !== testCase.userType && t !== testCase.feature).map(t => (
-              <Tag key={t} label={t} color={Colors.warning} />
-            ))}
+            {testCase.tags
+              .filter(t => t !== testCase.userType && t !== testCase.feature)
+              .map(t => <Tag key={t} label={t} color={Colors.warning} />)}
           </View>
           {profile && (
             <TouchableOpacity onPress={() => router.push(`/profile/${profile.id}`)}>
@@ -131,21 +178,40 @@ export default function TestCaseDetailScreen() {
           {testCase.steps.map(step => <StepRow key={step.order} step={step} />)}
         </View>
 
-        {testCase.expectedResult && (
+        {testCase.expectedResult ? (
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>Overall Expected Result</Text>
             <View style={styles.expectedResult}>
               <Text style={styles.expectedResultText}>{testCase.expectedResult}</Text>
             </View>
           </View>
+        ) : null}
+
+        {testCase.dataRequirements && testCase.dataRequirements.length > 0 && (
+          <View style={styles.section}>
+            <Text style={styles.sectionLabel}>Data Requirements</Text>
+            {testCase.dataRequirements.map((req, i) => (
+              <View key={i} style={styles.dataReqCard}>
+                <View style={styles.dataReqHeader}>
+                  <View style={styles.dataReqTypeBadge}>
+                    <Text style={styles.dataReqType}>{req.type}</Text>
+                  </View>
+                  <Text style={styles.dataReqDesc}>{req.description}</Text>
+                </View>
+                {req.example ? (
+                  <Text style={styles.dataReqExample}>e.g. {req.example}</Text>
+                ) : null}
+              </View>
+            ))}
+          </View>
         )}
 
-        {testCase.voiceInput && (
+        {testCase.voiceInput ? (
           <View style={styles.section}>
             <Text style={styles.sectionLabel}>Original Voice Input</Text>
             <Text style={[styles.bodyText, styles.voiceInput]}>"{testCase.voiceInput}"</Text>
           </View>
-        )}
+        ) : null}
 
         <Text style={styles.createdAt}>Created {new Date(testCase.createdAt).toLocaleDateString()}</Text>
 
@@ -154,10 +220,13 @@ export default function TestCaseDetailScreen() {
             <Text style={styles.actionBtnText}>{copied ? '✓ Copied' : '📋 Copy'}</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.actionBtn} onPress={handleShare}>
-            <Text style={styles.actionBtnText}>📤 Share</Text>
+            <Text style={styles.actionBtnText}>📄 Text</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.actionBtn} onPress={handleExportJson}>
+            <Text style={styles.actionBtnText}>⬇ JSON</Text>
           </TouchableOpacity>
           <TouchableOpacity style={[styles.actionBtn, styles.deleteBtn]} onPress={handleDelete}>
-            <Text style={[styles.actionBtnText, styles.deleteBtnText]}>🗑️ Delete</Text>
+            <Text style={[styles.actionBtnText, styles.deleteBtnText]}>🗑️</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -205,11 +274,26 @@ const styles = StyleSheet.create({
   expectedRow: { flexDirection: 'row', paddingLeft: 34, flexWrap: 'wrap' },
   expectedLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.secondary },
   expectedText: { fontSize: FontSize.sm, color: Colors.textSecondary, flex: 1, lineHeight: 20 },
+  hintRow: { flexDirection: 'row', paddingLeft: 34, flexWrap: 'wrap' },
+  hintLabel: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.primary },
+  hintText: { fontSize: FontSize.xs, color: Colors.textMuted, flex: 1, lineHeight: 18, fontFamily: 'monospace' },
   expectedResult: {
     backgroundColor: Colors.secondary + '11', borderRadius: BorderRadius.sm,
     padding: Spacing.md, borderWidth: 1, borderColor: Colors.secondary + '33',
   },
   expectedResultText: { fontSize: FontSize.sm, color: Colors.text, lineHeight: 22 },
+  dataReqCard: {
+    backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.sm,
+    padding: Spacing.sm, gap: 4, borderWidth: 1, borderColor: Colors.border,
+  },
+  dataReqHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, flexWrap: 'wrap' },
+  dataReqTypeBadge: {
+    backgroundColor: Colors.warning + '22', borderRadius: BorderRadius.full,
+    paddingHorizontal: Spacing.sm, paddingVertical: 2,
+  },
+  dataReqType: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.warning, textTransform: 'uppercase' },
+  dataReqDesc: { fontSize: FontSize.sm, color: Colors.text, flex: 1 },
+  dataReqExample: { fontSize: FontSize.xs, color: Colors.textMuted, paddingLeft: 4, fontStyle: 'italic' },
   voiceInput: { color: Colors.textSecondary, fontStyle: 'italic' },
   createdAt: { fontSize: FontSize.xs, color: Colors.textMuted, textAlign: 'center' },
   actions: { flexDirection: 'row', gap: Spacing.sm },
@@ -218,6 +302,6 @@ const styles = StyleSheet.create({
     padding: Spacing.md, alignItems: 'center', borderWidth: 1, borderColor: Colors.border,
   },
   actionBtnText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
-  deleteBtn: { borderColor: Colors.danger + '44', backgroundColor: Colors.danger + '11' },
+  deleteBtn: { borderColor: Colors.danger + '44', backgroundColor: Colors.danger + '11', flex: 0, paddingHorizontal: Spacing.md },
   deleteBtnText: { color: Colors.danger },
 });

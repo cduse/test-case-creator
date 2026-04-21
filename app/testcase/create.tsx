@@ -6,7 +6,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { getProfile, saveTestCase } from '../../services/storage';
-import { transcribeAudio, generateTestCase, hasApiKey } from '../../services/openai';
+import { transcribeAudio, generateTestCases, hasApiKey } from '../../services/openai';
 import { AppProfile, GeneratedTestCase, TestCase } from '../../types';
 import { generateId } from '../../utils/id';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../constants/theme';
@@ -20,7 +20,7 @@ export default function CreateTestCaseScreen() {
   const [profile, setProfile] = useState<AppProfile | null>(null);
   const [phase, setPhase] = useState<Phase>('record');
   const [transcript, setTranscript] = useState('');
-  const [generated, setGenerated] = useState<GeneratedTestCase | null>(null);
+  const [generated, setGenerated] = useState<GeneratedTestCase[]>([]);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -58,8 +58,8 @@ export default function CreateTestCaseScreen() {
     if (!profile || !transcript.trim()) return;
     setPhase('generating');
     try {
-      const result = await generateTestCase(transcript, profile);
-      setGenerated(result);
+      const results = await generateTestCases(transcript, profile);
+      setGenerated(results);
       setPhase('edit');
     } catch (e: any) {
       Alert.alert('Generation Failed', e.message);
@@ -67,19 +67,23 @@ export default function CreateTestCaseScreen() {
     }
   }
 
-  async function handleSave() {
-    if (!generated || !profileId) return;
+  async function handleSaveAll() {
+    if (!generated.length || !profileId) return;
     setSaving(true);
     try {
-      const testCase: TestCase = {
-        id: generateId(),
-        appProfileId: profileId,
-        voiceInput: transcript,
-        createdAt: new Date().toISOString(),
-        ...generated,
-      };
-      await saveTestCase(testCase);
-      router.replace(`/testcase/${testCase.id}`);
+      const now = new Date().toISOString();
+      for (const tc of generated) {
+        const testCase: TestCase = {
+          id: generateId(),
+          appProfileId: profileId,
+          voiceInput: transcript,
+          createdAt: now,
+          ...tc,
+        };
+        await saveTestCase(testCase);
+      }
+      // Navigate back to the profile so they can see all saved cases
+      router.replace(`/profile/${profileId}`);
     } catch (e: any) {
       Alert.alert('Save Failed', e.message);
       setSaving(false);
@@ -88,8 +92,16 @@ export default function CreateTestCaseScreen() {
 
   function handleRetry() {
     setTranscript('');
-    setGenerated(null);
+    setGenerated([]);
     setPhase('record');
+  }
+
+  function updateCase(index: number, updated: GeneratedTestCase) {
+    setGenerated(prev => prev.map((tc, i) => i === index ? updated : tc));
+  }
+
+  function removeCase(index: number) {
+    setGenerated(prev => prev.filter((_, i) => i !== index));
   }
 
   if (!profile) {
@@ -109,12 +121,11 @@ export default function CreateTestCaseScreen() {
             <Text style={styles.profileBadgeName}>{profile.name}</Text>
           </View>
 
-          {(phase === 'record') && (
+          {phase === 'record' && (
             <View style={styles.card}>
-              <Text style={styles.cardTitle}>Describe the Test Case</Text>
+              <Text style={styles.cardTitle}>Describe Your Test Scenario</Text>
               <Text style={styles.cardSubtitle}>
-                Speak naturally. Reference user types and features by name.
-                Example: "Buying airtime for a prestige user"
+                You can describe multiple scenarios in one go — e.g. "Verify that prestige users can send MoMo, buy airtime and buy data only when header enriched" will generate 3 separate test cases.
               </Text>
               <VoiceRecorder onTranscriptionComplete={handleRecordingComplete} />
               <View style={styles.divider}><Text style={styles.dividerText}>or type it instead</Text></View>
@@ -122,7 +133,7 @@ export default function CreateTestCaseScreen() {
                 style={[styles.input, styles.textArea]}
                 value={transcript}
                 onChangeText={setTranscript}
-                placeholder="Type your test case description here..."
+                placeholder="Type your test scenario description here..."
                 placeholderTextColor={Colors.textMuted}
                 multiline
                 numberOfLines={4}
@@ -147,9 +158,9 @@ export default function CreateTestCaseScreen() {
 
           {phase === 'review' && (
             <View style={styles.card}>
-              <Text style={styles.cardTitle}>Review Transcript</Text>
+              <Text style={styles.cardTitle}>Review Your Description</Text>
               <Text style={styles.cardSubtitle}>
-                Edit the text if needed, then generate the test case.
+                Edit if needed, then generate. Multiple scenarios detected in one description will each become their own test case.
               </Text>
               <TextInput
                 style={[styles.input, styles.textArea, styles.transcriptInput]}
@@ -164,7 +175,7 @@ export default function CreateTestCaseScreen() {
                   <Text style={styles.secondaryBtnText}>↩ Re-record</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.primaryBtn, { flex: 1 }]} onPress={handleGenerate}>
-                  <Text style={styles.primaryBtnText}>✨ Generate Test Case</Text>
+                  <Text style={styles.primaryBtnText}>✨ Generate</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -174,23 +185,56 @@ export default function CreateTestCaseScreen() {
             <View style={styles.card}>
               <View style={styles.loadingState}>
                 <ActivityIndicator color={Colors.primary} size="large" />
-                <Text style={styles.loadingTitle}>Generating Test Case...</Text>
+                <Text style={styles.loadingTitle}>Generating Test Cases...</Text>
                 <Text style={styles.loadingSubtitle}>
-                  GPT-4o is analyzing your input with {profile.name}'s context
+                  GPT-4o is analysing your description with {profile.name}'s context
                 </Text>
               </View>
             </View>
           )}
 
-          {phase === 'edit' && generated && (
-            <GeneratedPreview
-              generated={generated}
-              onChange={setGenerated}
-              transcript={transcript}
-              onRetry={handleRetry}
-              onSave={handleSave}
-              saving={saving}
-            />
+          {phase === 'edit' && generated.length > 0 && (
+            <>
+              <View style={styles.card}>
+                <View style={styles.generatedHeader}>
+                  <Text style={styles.generatedBadge}>
+                    ✨ {generated.length} test case{generated.length > 1 ? 's' : ''} generated
+                  </Text>
+                  <TouchableOpacity onPress={handleRetry}>
+                    <Text style={styles.retryLink}>Start over</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.cardSubtitle}>From: "{transcript}"</Text>
+                {generated.length > 1 && (
+                  <Text style={styles.multiHint}>
+                    Review each test case below. Remove any you don't need before saving.
+                  </Text>
+                )}
+              </View>
+
+              {generated.map((tc, index) => (
+                <GeneratedCaseEditor
+                  key={index}
+                  index={index}
+                  total={generated.length}
+                  tc={tc}
+                  onChange={updated => updateCase(index, updated)}
+                  onRemove={() => removeCase(index)}
+                />
+              ))}
+
+              <TouchableOpacity
+                style={[styles.saveBtn, saving && { opacity: 0.6 }]}
+                onPress={handleSaveAll}
+                disabled={saving}
+              >
+                {saving
+                  ? <ActivityIndicator color={Colors.white} />
+                  : <Text style={styles.saveBtnText}>
+                      Save {generated.length} Test Case{generated.length > 1 ? 's' : ''}
+                    </Text>}
+              </TouchableOpacity>
+            </>
           )}
         </ScrollView>
       </KeyboardAvoidingView>
@@ -198,38 +242,36 @@ export default function CreateTestCaseScreen() {
   );
 }
 
-function GeneratedPreview({ generated, onChange, transcript, onRetry, onSave, saving }: {
-  generated: GeneratedTestCase;
-  onChange: (g: GeneratedTestCase) => void;
-  transcript: string;
-  onRetry: () => void;
-  onSave: () => void;
-  saving: boolean;
+function GeneratedCaseEditor({ tc, index, total, onChange, onRemove }: {
+  tc: GeneratedTestCase;
+  index: number;
+  total: number;
+  onChange: (tc: GeneratedTestCase) => void;
+  onRemove: () => void;
 }) {
   return (
-    <>
-      <View style={styles.card}>
-        <View style={styles.generatedHeader}>
-          <Text style={styles.generatedBadge}>✨ Generated</Text>
-          <TouchableOpacity onPress={onRetry}>
-            <Text style={styles.retryLink}>Start over</Text>
+    <View style={styles.caseBlock}>
+      {total > 1 && (
+        <View style={styles.caseBlockHeader}>
+          <Text style={styles.caseBlockNum}>Test Case {index + 1} of {total}</Text>
+          <TouchableOpacity style={styles.removeBtn} onPress={onRemove}>
+            <Text style={styles.removeBtnText}>Remove</Text>
           </TouchableOpacity>
         </View>
-        <Text style={styles.cardSubtitle}>From: "{transcript}"</Text>
-      </View>
+      )}
 
       <View style={styles.card}>
         <Text style={styles.fieldLabel}>Title</Text>
         <TextInput
           style={styles.input}
-          value={generated.title}
-          onChangeText={v => onChange({ ...generated, title: v })}
+          value={tc.title}
+          onChangeText={v => onChange({ ...tc, title: v })}
         />
         <Text style={styles.fieldLabel}>Description</Text>
         <TextInput
           style={[styles.input, styles.textArea]}
-          value={generated.description}
-          onChangeText={v => onChange({ ...generated, description: v })}
+          value={tc.description}
+          onChangeText={v => onChange({ ...tc, description: v })}
           multiline
           numberOfLines={3}
         />
@@ -238,8 +280,8 @@ function GeneratedPreview({ generated, onChange, transcript, onRetry, onSave, sa
             <Text style={styles.fieldLabel}>User Type</Text>
             <TextInput
               style={styles.input}
-              value={generated.userType ?? ''}
-              onChangeText={v => onChange({ ...generated, userType: v || undefined })}
+              value={tc.userType ?? ''}
+              onChangeText={v => onChange({ ...tc, userType: v || undefined })}
               placeholder="e.g. Prestige User"
               placeholderTextColor={Colors.textMuted}
             />
@@ -248,8 +290,8 @@ function GeneratedPreview({ generated, onChange, transcript, onRetry, onSave, sa
             <Text style={styles.fieldLabel}>Feature</Text>
             <TextInput
               style={styles.input}
-              value={generated.feature}
-              onChangeText={v => onChange({ ...generated, feature: v })}
+              value={tc.feature}
+              onChangeText={v => onChange({ ...tc, feature: v })}
               placeholder="e.g. Buy Airtime"
               placeholderTextColor={Colors.textMuted}
             />
@@ -257,19 +299,19 @@ function GeneratedPreview({ generated, onChange, transcript, onRetry, onSave, sa
         </View>
       </View>
 
-      {generated.preconditions.length > 0 && (
+      {tc.preconditions.length > 0 && (
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Preconditions</Text>
-          {generated.preconditions.map((p, i) => (
+          {tc.preconditions.map((p, i) => (
             <View key={i} style={styles.preconditionRow}>
               <Text style={styles.bullet}>•</Text>
               <TextInput
                 style={[styles.input, { flex: 1 }]}
                 value={p}
                 onChangeText={v => {
-                  const updated = [...generated.preconditions];
+                  const updated = [...tc.preconditions];
                   updated[i] = v;
-                  onChange({ ...generated, preconditions: updated });
+                  onChange({ ...tc, preconditions: updated });
                 }}
                 multiline
               />
@@ -279,8 +321,8 @@ function GeneratedPreview({ generated, onChange, transcript, onRetry, onSave, sa
       )}
 
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Steps ({generated.steps.length})</Text>
-        {generated.steps.map((step, i) => (
+        <Text style={styles.cardTitle}>Steps ({tc.steps.length})</Text>
+        {tc.steps.map((step, i) => (
           <View key={i} style={styles.stepCard}>
             <View style={styles.stepHeader}>
               <View style={styles.stepNum}><Text style={styles.stepNumText}>{step.order}</Text></View>
@@ -290,9 +332,9 @@ function GeneratedPreview({ generated, onChange, transcript, onRetry, onSave, sa
               style={[styles.input, styles.textArea]}
               value={step.action}
               onChangeText={v => {
-                const updated = [...generated.steps];
+                const updated = [...tc.steps];
                 updated[i] = { ...step, action: v };
-                onChange({ ...generated, steps: updated });
+                onChange({ ...tc, steps: updated });
               }}
               multiline
               numberOfLines={2}
@@ -302,9 +344,9 @@ function GeneratedPreview({ generated, onChange, transcript, onRetry, onSave, sa
               style={[styles.input, styles.textArea]}
               value={step.expectedResult}
               onChangeText={v => {
-                const updated = [...generated.steps];
+                const updated = [...tc.steps];
                 updated[i] = { ...step, expectedResult: v };
-                onChange({ ...generated, steps: updated });
+                onChange({ ...tc, steps: updated });
               }}
               multiline
               numberOfLines={2}
@@ -317,19 +359,13 @@ function GeneratedPreview({ generated, onChange, transcript, onRetry, onSave, sa
         <Text style={styles.cardTitle}>Overall Expected Result</Text>
         <TextInput
           style={[styles.input, styles.textArea]}
-          value={generated.expectedResult}
-          onChangeText={v => onChange({ ...generated, expectedResult: v })}
+          value={tc.expectedResult}
+          onChangeText={v => onChange({ ...tc, expectedResult: v })}
           multiline
           numberOfLines={3}
         />
       </View>
-
-      <TouchableOpacity style={styles.saveBtn} onPress={onSave} disabled={saving}>
-        {saving
-          ? <ActivityIndicator color={Colors.white} />
-          : <Text style={styles.saveBtnText}>Save Test Case</Text>}
-      </TouchableOpacity>
-    </>
+    </View>
   );
 }
 
@@ -349,6 +385,7 @@ const styles = StyleSheet.create({
   },
   cardTitle: { fontSize: FontSize.md, fontWeight: '700', color: Colors.text },
   cardSubtitle: { fontSize: FontSize.sm, color: Colors.textSecondary, lineHeight: 20 },
+  multiHint: { fontSize: FontSize.sm, color: Colors.warning, lineHeight: 18 },
   input: {
     backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.sm,
     paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
@@ -375,6 +412,17 @@ const styles = StyleSheet.create({
   generatedHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   generatedBadge: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.secondary },
   retryLink: { fontSize: FontSize.sm, color: Colors.textSecondary },
+  caseBlock: { gap: Spacing.sm },
+  caseBlockHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: Spacing.xs,
+  },
+  caseBlockNum: { fontSize: FontSize.sm, fontWeight: '700', color: Colors.primary },
+  removeBtn: {
+    backgroundColor: Colors.danger + '22', borderRadius: BorderRadius.sm,
+    paddingHorizontal: Spacing.sm, paddingVertical: Spacing.xs,
+  },
+  removeBtnText: { fontSize: FontSize.xs, color: Colors.danger, fontWeight: '600' },
   fieldLabel: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5 },
   preconditionRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   bullet: { fontSize: FontSize.md, color: Colors.textSecondary },
