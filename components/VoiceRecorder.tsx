@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Animated, ActivityIndicator } from 'react-native';
 import { Audio } from 'expo-av';
+import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, FontSize, BorderRadius } from '../constants/theme';
 
 interface Props {
@@ -141,7 +142,7 @@ export default function VoiceRecorder({ onTranscriptionComplete, disabled }: Pro
         {isLoading ? (
           <ActivityIndicator color={Colors.white} size="large" />
         ) : (
-          <Text style={styles.icon}>{isRecording ? '⏹' : '🎙️'}</Text>
+          <Ionicons name={isRecording ? 'stop' : 'mic'} size={32} color={Colors.white} />
         )}
       </TouchableOpacity>
 
@@ -179,7 +180,6 @@ const styles = StyleSheet.create({
     shadowColor: Colors.recording,
   },
   buttonDisabled: { opacity: 0.5 },
-  icon: { fontSize: 32 },
   label: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text, marginTop: 4 },
   hint: { fontSize: FontSize.sm, color: Colors.textSecondary },
 });

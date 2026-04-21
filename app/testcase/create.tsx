@@ -9,6 +9,7 @@ import { getProfile, saveTestCase } from '../../services/storage';
 import { transcribeAudio, generateTestCases, hasApiKey } from '../../services/openai';
 import { AppProfile, GeneratedTestCase, TestCase } from '../../types';
 import { generateId } from '../../utils/id';
+import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../constants/theme';
 import VoiceRecorder from '../../components/VoiceRecorder';
 
@@ -175,7 +176,10 @@ export default function CreateTestCaseScreen() {
                   <Text style={styles.secondaryBtnText}>↩ Re-record</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.primaryBtn, { flex: 1 }]} onPress={handleGenerate}>
-                  <Text style={styles.primaryBtnText}>✨ Generate</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Ionicons name="sparkles" size={16} color={Colors.white} />
+                    <Text style={styles.primaryBtnText}>Generate</Text>
+                  </View>
                 </TouchableOpacity>
               </View>
             </View>
@@ -197,9 +201,12 @@ export default function CreateTestCaseScreen() {
             <>
               <View style={styles.card}>
                 <View style={styles.generatedHeader}>
-                  <Text style={styles.generatedBadge}>
-                    ✨ {generated.length} test case{generated.length > 1 ? 's' : ''} generated
-                  </Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Ionicons name="sparkles" size={14} color={Colors.secondary} />
+                    <Text style={styles.generatedBadge}>
+                      {generated.length} test case{generated.length > 1 ? 's' : ''} generated
+                    </Text>
+                  </View>
                   <TouchableOpacity onPress={handleRetry}>
                     <Text style={styles.retryLink}>Start over</Text>
                   </TouchableOpacity>

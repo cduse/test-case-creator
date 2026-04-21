@@ -27,7 +27,9 @@ export default function RootLayout() {
         <Stack.Screen name="index" options={{ title: 'Test Case Creator' }} />
         <Stack.Screen name="settings" options={{ title: 'Settings', presentation: 'modal' }} />
         <Stack.Screen name="profile/create" options={{ title: 'New App Profile' }} />
-        <Stack.Screen name="profile/[id]" options={{ title: 'App Profile' }} />
+        <Stack.Screen name="profile/[id]/index" options={{ title: 'App Profile' }} />
+        <Stack.Screen name="profile/[id]/features" options={{ title: 'Features' }} />
+        <Stack.Screen name="profile/[id]/user-types" options={{ title: 'User Types' }} />
         <Stack.Screen name="testcase/create" options={{ title: 'New Test Case' }} />
         <Stack.Screen name="testcase/[id]" options={{ title: 'Test Case' }} />
       </Stack>

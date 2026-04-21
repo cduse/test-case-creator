@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import { saveApiKey, loadApiKey } from '../services/storage';
 import { setApiKey } from '../services/openai';
 import { Colors, Spacing, FontSize, BorderRadius } from '../constants/theme';
@@ -67,7 +68,7 @@ export default function SettingsScreen() {
               autoCorrect={false}
             />
             <TouchableOpacity style={styles.eyeBtn} onPress={() => setMasked(!masked)}>
-              <Text style={styles.eyeIcon}>{masked ? '👁️' : '🙈'}</Text>
+              <Ionicons name={masked ? 'eye-outline' : 'eye-off-outline'} size={20} color={Colors.textSecondary} />
             </TouchableOpacity>
           </View>
         </View>
@@ -128,7 +129,6 @@ const styles = StyleSheet.create({
     color: Colors.text, fontSize: FontSize.sm, borderWidth: 1, borderColor: Colors.border,
   },
   eyeBtn: { padding: Spacing.sm },
-  eyeIcon: { fontSize: 20 },
   steps: { gap: Spacing.sm },
   stepRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm },
   stepNum: {

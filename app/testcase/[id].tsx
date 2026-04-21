@@ -10,6 +10,7 @@ import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { getTestCase, getProfile, deleteTestCase, formatTestCasesAsText, buildAutomationExport } from '../../services/storage';
 import { TestCase, AppProfile, Priority, TestType } from '../../types';
+import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../constants/theme';
 
 const PRIORITY_COLOR: Record<Priority, string> = {
@@ -217,16 +218,19 @@ export default function TestCaseDetailScreen() {
 
         <View style={styles.actions}>
           <TouchableOpacity style={styles.actionBtn} onPress={handleCopy}>
-            <Text style={styles.actionBtnText}>{copied ? '✓ Copied' : '📋 Copy'}</Text>
+            <Ionicons name={copied ? 'checkmark' : 'copy-outline'} size={16} color={Colors.secondary} />
+            <Text style={styles.actionBtnText}>{copied ? 'Copied' : 'Copy'}</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.actionBtn} onPress={handleShare}>
-            <Text style={styles.actionBtnText}>📄 Text</Text>
+            <Ionicons name="document-text-outline" size={16} color={Colors.secondary} />
+            <Text style={styles.actionBtnText}>Text</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.actionBtn} onPress={handleExportJson}>
-            <Text style={styles.actionBtnText}>⬇ JSON</Text>
+            <Ionicons name="download-outline" size={16} color={Colors.secondary} />
+            <Text style={styles.actionBtnText}>JSON</Text>
           </TouchableOpacity>
           <TouchableOpacity style={[styles.actionBtn, styles.deleteBtn]} onPress={handleDelete}>
-            <Text style={[styles.actionBtnText, styles.deleteBtnText]}>🗑️</Text>
+            <Ionicons name="trash-outline" size={16} color={Colors.danger} />
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -299,7 +303,9 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', gap: Spacing.sm },
   actionBtn: {
     flex: 1, backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
-    padding: Spacing.md, alignItems: 'center', borderWidth: 1, borderColor: Colors.border,
+    padding: Spacing.md, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: Colors.border,
+    flexDirection: 'row', gap: 6,
   },
   actionBtnText: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text },
   deleteBtn: { borderColor: Colors.danger + '44', backgroundColor: Colors.danger + '11', flex: 0, paddingHorizontal: Spacing.md },

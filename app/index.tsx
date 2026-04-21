@@ -5,9 +5,18 @@ import {
 } from 'react-native';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import { getProfiles, deleteProfile } from '../services/storage';
 import { AppProfile } from '../types';
 import { Colors, Spacing, FontSize, BorderRadius } from '../constants/theme';
+
+function Pill({ label, color }: { label: string; color: string }) {
+  return (
+    <View style={[styles.pill, { backgroundColor: color + '22', borderColor: color + '44' }]}>
+      <Text style={[styles.pillText, { color }]}>{label}</Text>
+    </View>
+  );
+}
 
 function ProfileCard({ profile, onPress, onDelete }: {
   profile: AppProfile;
@@ -15,7 +24,7 @@ function ProfileCard({ profile, onPress, onDelete }: {
   onDelete: () => void;
 }) {
   return (
-    <TouchableOpacity style={styles.card} onPress={onPress} onLongPress={onDelete} activeOpacity={0.7}>
+    <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.cardHeader}>
         <View style={styles.cardIcon}>
           <Text style={styles.cardIconText}>{profile.name.charAt(0).toUpperCase()}</Text>
@@ -24,6 +33,9 @@ function ProfileCard({ profile, onPress, onDelete }: {
           <Text style={styles.cardTitle} numberOfLines={1}>{profile.name}</Text>
           <Text style={styles.cardSubtitle} numberOfLines={2}>{profile.description || 'No description'}</Text>
         </View>
+        <TouchableOpacity style={styles.deleteBtn} onPress={onDelete} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+          <Ionicons name="trash-outline" size={16} color={Colors.danger} />
+        </TouchableOpacity>
       </View>
       <View style={styles.cardMeta}>
         <Pill label={`${profile.features.length} features`} color={Colors.primary} />
@@ -31,14 +43,6 @@ function ProfileCard({ profile, onPress, onDelete }: {
         {profile.contextSummary && <Pill label="AI ready" color={Colors.warning} />}
       </View>
     </TouchableOpacity>
-  );
-}
-
-function Pill({ label, color }: { label: string; color: string }) {
-  return (
-    <View style={[styles.pill, { backgroundColor: color + '22', borderColor: color + '44' }]}>
-      <Text style={[styles.pillText, { color }]}>{label}</Text>
-    </View>
   );
 }
 
@@ -78,7 +82,7 @@ export default function HomeScreen() {
       <View style={styles.headerActions}>
         <Text style={styles.sectionLabel}>App Profiles</Text>
         <TouchableOpacity style={styles.settingsBtn} onPress={() => router.push('/settings')}>
-          <Text style={styles.settingsIcon}>⚙️</Text>
+          <Ionicons name="settings-outline" size={22} color={Colors.textSecondary} />
         </TouchableOpacity>
       </View>
 
@@ -86,7 +90,7 @@ export default function HomeScreen() {
         <ActivityIndicator color={Colors.primary} style={{ marginTop: 60 }} />
       ) : profiles.length === 0 ? (
         <View style={styles.empty}>
-          <Text style={styles.emptyIcon}>📋</Text>
+          <Ionicons name="clipboard-outline" size={56} color={Colors.textMuted} />
           <Text style={styles.emptyTitle}>No App Profiles Yet</Text>
           <Text style={styles.emptySubtitle}>
             Create a profile for each app you want to build a regression suite for.
@@ -112,7 +116,7 @@ export default function HomeScreen() {
 
       {profiles.length > 0 && (
         <TouchableOpacity style={styles.fab} onPress={() => router.push('/profile/create')}>
-          <Text style={styles.fabText}>+</Text>
+          <Ionicons name="add" size={28} color={Colors.white} />
         </TouchableOpacity>
       )}
     </SafeAreaView>
@@ -127,7 +131,6 @@ const styles = StyleSheet.create({
   },
   sectionLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary, letterSpacing: 1, textTransform: 'uppercase' },
   settingsBtn: { padding: Spacing.xs },
-  settingsIcon: { fontSize: 22 },
   list: { padding: Spacing.md, gap: Spacing.sm },
   card: {
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
@@ -143,16 +146,20 @@ const styles = StyleSheet.create({
   cardInfo: { flex: 1 },
   cardTitle: { fontSize: FontSize.md, fontWeight: '600', color: Colors.text, marginBottom: 2 },
   cardSubtitle: { fontSize: FontSize.sm, color: Colors.textSecondary, lineHeight: 18 },
+  deleteBtn: {
+    width: 32, height: 32, borderRadius: BorderRadius.sm,
+    backgroundColor: Colors.danger + '22', alignItems: 'center', justifyContent: 'center',
+    marginLeft: Spacing.xs,
+  },
   cardMeta: { flexDirection: 'row', gap: Spacing.xs, flexWrap: 'wrap' },
   pill: {
     paddingHorizontal: Spacing.sm, paddingVertical: 3,
     borderRadius: BorderRadius.full, borderWidth: 1,
   },
   pillText: { fontSize: FontSize.xs, fontWeight: '600' },
-  empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl },
-  emptyIcon: { fontSize: 56, marginBottom: Spacing.md },
-  emptyTitle: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.text, marginBottom: Spacing.sm },
-  emptySubtitle: { fontSize: FontSize.md, color: Colors.textSecondary, textAlign: 'center', lineHeight: 22, marginBottom: Spacing.xl },
+  empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl, gap: Spacing.md },
+  emptyTitle: { fontSize: FontSize.xl, fontWeight: '700', color: Colors.text },
+  emptySubtitle: { fontSize: FontSize.md, color: Colors.textSecondary, textAlign: 'center', lineHeight: 22 },
   emptyButton: {
     backgroundColor: Colors.primary, paddingHorizontal: Spacing.xl,
     paddingVertical: Spacing.md, borderRadius: BorderRadius.md,
@@ -164,5 +171,4 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center',
     elevation: 6, shadowColor: Colors.primary, shadowOpacity: 0.4, shadowRadius: 8, shadowOffset: { width: 0, height: 4 },
   },
-  fabText: { fontSize: 28, color: Colors.white, fontWeight: '300', lineHeight: 34 },
 });
