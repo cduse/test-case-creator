@@ -12,7 +12,7 @@ on:
 
 jobs:
   build:
-    name: Build Debug APK
+    name: Build Release APK
     runs-on: ubuntu-latest
 
     steps:
@@ -51,8 +51,38 @@ jobs:
       - name: Make Gradlew executable
         run: chmod +x android/gradlew
 
-      - name: Build Debug APK
-        run: cd android && ./gradlew assembleDebug --no-daemon --stacktrace
+      - name: Generate release signing keystore
+        run: |
+          keytool -genkey -v \
+            -keystore android/app/release.keystore \
+            -alias testcasecreator \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=TestCaseCreator, OU=Dev, O=Dev, L=ZA, S=ZA, C=ZA" \
+            -storepass testcase123 \
+            -keypass testcase123 \
+            -noprompt
+
+      - name: Inject release signing config into build.gradle
+        run: |
+          cat >> android/app/build.gradle << 'GRADLE'
+
+          android.signingConfigs {
+              release {
+                  storeFile file('release.keystore')
+                  storePassword 'testcase123'
+                  keyAlias 'testcasecreator'
+                  keyPassword 'testcase123'
+              }
+          }
+          android.buildTypes.release {
+              signingConfig android.signingConfigs.release
+          }
+          GRADLE
+
+      - name: Build Release APK
+        run: cd android && ./gradlew assembleRelease --no-daemon --stacktrace
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
           JAVA_HOME: ${{ env.JAVA_HOME }}
@@ -62,7 +92,7 @@ jobs:
           VERSION="${{ github.event.inputs.version || github.sha }}"
           SHORT="${VERSION:0:8}"
           mkdir -p release
-          cp android/app/build/outputs/apk/debug/app-debug.apk "release/TestCaseCreator-${SHORT}.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "release/TestCaseCreator-${SHORT}.apk"
           echo "APK_PATH=release/TestCaseCreator-${SHORT}.apk" >> $GITHUB_ENV
           echo "APK_NAME=TestCaseCreator-${SHORT}.apk" >> $GITHUB_ENV
 
