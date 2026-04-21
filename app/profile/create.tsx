@@ -1,12 +1,11 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   ScrollView, Alert, ActivityIndicator, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
-import { saveProfile } from '../../services/storage';
-import { generateContextSummary } from '../../services/openai';
+import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
+import { saveProfile, getProfile } from '../../services/storage';
 import { AppProfile, Feature, UserType } from '../../types';
 import { generateId } from '../../utils/id';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../constants/theme';
@@ -129,11 +128,35 @@ function FeatureEditor({ feature, onChange, onDelete }: {
 
 export default function CreateProfileScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
+  const { id } = useLocalSearchParams<{ id?: string }>();
+  const isEditing = !!id;
+
+  const [loading, setLoading] = useState(isEditing);
+  const [existingProfile, setExistingProfile] = useState<AppProfile | null>(null);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [userTypes, setUserTypes] = useState<UserType[]>([]);
   const [features, setFeatures] = useState<Feature[]>([]);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    navigation.setOptions({ title: isEditing ? 'Edit Profile' : 'New App Profile' });
+  }, [isEditing]);
+
+  useEffect(() => {
+    if (!id) return;
+    getProfile(id).then(profile => {
+      if (profile) {
+        setExistingProfile(profile);
+        setName(profile.name);
+        setDescription(profile.description);
+        setUserTypes(profile.userTypes);
+        setFeatures(profile.features);
+      }
+      setLoading(false);
+    });
+  }, [id]);
 
   function addUserType() {
     setUserTypes(prev => [...prev, { id: generateId(), name: '', description: '' }]);
@@ -151,14 +174,16 @@ export default function CreateProfileScreen() {
 
     setSaving(true);
     try {
+      const now = new Date().toISOString();
       const profile: AppProfile = {
-        id: generateId(),
+        id: existingProfile?.id ?? generateId(),
         name: name.trim(),
         description: description.trim(),
         userTypes: userTypes.filter(ut => ut.name.trim()),
         features: features.filter(f => f.name.trim()),
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        contextSummary: existingProfile?.contextSummary,
+        createdAt: existingProfile?.createdAt ?? now,
+        updatedAt: now,
       };
       await saveProfile(profile);
       router.replace(`/profile/${profile.id}`);
@@ -167,6 +192,14 @@ export default function CreateProfileScreen() {
     } finally {
       setSaving(false);
     }
+  }
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <ActivityIndicator color={Colors.primary} style={{ marginTop: 60 }} />
+      </SafeAreaView>
+    );
   }
 
   return (
@@ -207,11 +240,9 @@ export default function CreateProfileScreen() {
                 onDelete={() => setUserTypes(prev => prev.filter((_, idx) => idx !== i))}
               />
             ))}
-            {userTypes.length === 0 && (
-              <TouchableOpacity style={styles.emptyAddBtn} onPress={addUserType}>
-                <Text style={styles.emptyAddBtnText}>+ Add User Type</Text>
-              </TouchableOpacity>
-            )}
+            <TouchableOpacity style={styles.emptyAddBtn} onPress={addUserType}>
+              <Text style={styles.emptyAddBtnText}>+ Add User Type</Text>
+            </TouchableOpacity>
           </View>
 
           <View style={styles.section}>
@@ -227,17 +258,23 @@ export default function CreateProfileScreen() {
                 onDelete={() => setFeatures(prev => prev.filter((_, idx) => idx !== i))}
               />
             ))}
-            {features.length === 0 && (
-              <TouchableOpacity style={styles.emptyAddBtn} onPress={addFeature}>
-                <Text style={styles.emptyAddBtnText}>+ Add Feature</Text>
-              </TouchableOpacity>
-            )}
+            <TouchableOpacity style={styles.emptyAddBtn} onPress={addFeature}>
+              <Text style={styles.emptyAddBtnText}>+ Add Feature</Text>
+            </TouchableOpacity>
           </View>
+
+          {isEditing && (
+            <View style={styles.editNote}>
+              <Text style={styles.editNoteText}>
+                💡 After saving, re-generate the AI Context so it reflects your new features and user types.
+              </Text>
+            </View>
+          )}
 
           <TouchableOpacity style={styles.saveBtn} onPress={handleSave} disabled={saving}>
             {saving
               ? <ActivityIndicator color={Colors.white} />
-              : <Text style={styles.saveBtnText}>Create Profile</Text>}
+              : <Text style={styles.saveBtnText}>{isEditing ? 'Save Changes' : 'Create Profile'}</Text>}
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -296,6 +333,11 @@ const styles = StyleSheet.create({
     padding: Spacing.md, alignItems: 'center',
   },
   emptyAddBtnText: { color: Colors.textSecondary, fontSize: FontSize.sm },
+  editNote: {
+    backgroundColor: Colors.warning + '11', borderRadius: BorderRadius.md,
+    padding: Spacing.md, borderWidth: 1, borderColor: Colors.warning + '33',
+  },
+  editNoteText: { fontSize: FontSize.sm, color: Colors.warning, lineHeight: 20 },
   saveBtn: {
     backgroundColor: Colors.primary, borderRadius: BorderRadius.md,
     padding: Spacing.md, alignItems: 'center',

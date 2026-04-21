@@ -121,6 +121,12 @@ export default function ProfileDetailScreen() {
               <Text style={styles.profileDesc}>{profile.description}</Text>
             ) : null}
           </View>
+          <TouchableOpacity
+            style={styles.editBtn}
+            onPress={() => router.push({ pathname: '/profile/create', params: { id } })}
+          >
+            <Text style={styles.editBtnText}>✏️ Edit</Text>
+          </TouchableOpacity>
         </View>
 
         {profile.userTypes.length > 0 && (
@@ -237,6 +243,11 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
     padding: Spacing.md, borderWidth: 1, borderColor: Colors.border,
   },
+  editBtn: {
+    backgroundColor: Colors.primary + '22', borderRadius: BorderRadius.sm,
+    paddingHorizontal: Spacing.sm, paddingVertical: Spacing.xs,
+  },
+  editBtnText: { fontSize: FontSize.sm, color: Colors.primary, fontWeight: '600' },
   profileIcon: {
     width: 52, height: 52, borderRadius: BorderRadius.sm,
     backgroundColor: Colors.primary + '33', alignItems: 'center', justifyContent: 'center',
