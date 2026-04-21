@@ -95,6 +95,7 @@ jobs:
           cp android/app/build/outputs/apk/release/app-release.apk "release/TestCaseCreator-${SHORT}.apk"
           echo "APK_PATH=release/TestCaseCreator-${SHORT}.apk" >> $GITHUB_ENV
           echo "APK_NAME=TestCaseCreator-${SHORT}.apk" >> $GITHUB_ENV
+          echo "RELEASE_TAG=build-${SHORT}" >> $GITHUB_ENV
 
       - name: Upload APK as artifact
         uses: actions/upload-artifact@v4
@@ -103,14 +104,25 @@ jobs:
           path: ${{ env.APK_PATH }}
           retention-days: 30
 
-      - name: Create GitHub Release (on version tag)
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Delete existing release if it exists
+        run: |
+          gh release delete "${{ env.RELEASE_TAG }}" --yes || true
+          git push origin --delete "refs/tags/${{ env.RELEASE_TAG }}" || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Build ${{ env.RELEASE_TAG }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
           files: ${{ env.APK_PATH }}
-          name: Release ${{ github.ref_name }}
           body: |
-            ## Test Case Creator ${{ github.ref_name }}
+            ## Test Case Creator — ${{ env.APK_NAME }}
+
+            **Commit:** `${{ github.sha }}`
+            **Branch:** `${{ github.ref_name }}`
 
             ### Install
             1. Download `${{ env.APK_NAME }}` below
@@ -119,6 +131,6 @@ jobs:
             4. Open the file to install
 
             ### First time setup
-            Open the app → tap ⚙️ Settings → enter your OpenAI API key
+            Open the app → go to Settings → enter your OpenAI API key
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
