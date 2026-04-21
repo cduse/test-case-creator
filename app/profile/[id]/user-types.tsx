@@ -18,11 +18,13 @@ const EMPTY_USER_TYPE = (): UserType => ({ id: generateId(), name: '', descripti
 function UserTypeModal({
   visible,
   userType,
+  saving,
   onSave,
   onClose,
 }: {
   visible: boolean;
   userType: UserType | null;
+  saving: boolean;
   onSave: (ut: UserType) => void;
   onClose: () => void;
 }) {
@@ -77,8 +79,10 @@ function UserTypeModal({
               numberOfLines={4}
             />
 
-            <TouchableOpacity style={modal.saveBtn} onPress={handleSave}>
-              <Text style={modal.saveBtnText}>Save User Type</Text>
+            <TouchableOpacity style={[modal.saveBtn, saving && { opacity: 0.6 }]} onPress={handleSave} disabled={saving}>
+              {saving
+                ? <ActivityIndicator color={Colors.white} />
+                : <Text style={modal.saveBtnText}>Save User Type</Text>}
             </TouchableOpacity>
           </ScrollView>
         </KeyboardAvoidingView>
@@ -117,6 +121,7 @@ export default function UserTypesScreen() {
   const { user } = useAuth();
   const [userTypes, setUserTypes] = useState<UserType[]>([]);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [search, setSearch] = useState('');
   const [modalVisible, setModalVisible] = useState(false);
   const [editingUserType, setEditingUserType] = useState<UserType | null>(null);
@@ -144,7 +149,12 @@ export default function UserTypesScreen() {
       ? userTypes.map(ut => ut.id === userType.id ? userType : ut)
       : [...userTypes, userType];
     setUserTypes(updated);
-    await persist(updated);
+    setSaving(true);
+    try {
+      await persist(updated);
+    } finally {
+      setSaving(false);
+    }
     setModalVisible(false);
     setEditingUserType(null);
   }
@@ -237,6 +247,7 @@ export default function UserTypesScreen() {
       <UserTypeModal
         visible={modalVisible}
         userType={editingUserType}
+        saving={saving}
         onSave={handleSave}
         onClose={() => {
           setModalVisible(false);

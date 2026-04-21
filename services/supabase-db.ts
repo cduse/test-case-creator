@@ -2,28 +2,131 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
 import { AppProfile, Feature, TestCase, UserType } from '../types';
 
-// Local keys for mobile-only enrichment data
+// ─── In-Memory Cache ─────────────────────────────────────────────────────────
+
+const _cache = new Map<string, { data: unknown; ts: number }>();
+const CACHE_TTL = 30_000; // 30 seconds
+
+function fromCache<T>(key: string): T | undefined {
+  const hit = _cache.get(key);
+  if (!hit || Date.now() - hit.ts > CACHE_TTL) { _cache.delete(key); return undefined; }
+  return hit.data as T;
+}
+function toCache(key: string, data: unknown) { _cache.set(key, { data, ts: Date.now() }); }
+function bust(...keys: string[]) { keys.forEach(k => _cache.delete(k)); }
+function bustPrefix(prefix: string) {
+  for (const k of _cache.keys()) { if (k.startsWith(prefix)) _cache.delete(k); }
+}
+
+// ─── Local-only AsyncStorage keys (feature steps & context — non-critical AI hints) ───
+
 function stepsKey(featureId: string) { return `feature_steps_${featureId}`; }
-function userTypesKey(productId: string) { return `user_types_${productId}`; }
 function contextKey(productId: string) { return `context_summary_${productId}`; }
 
-// ─── Products / App Profiles ─────────────────────────────────────────────────
+// ─── Supabase Settings helpers (user types — org-shared, survives reinstall) ─
+
+const SETTINGS_PREFIX = 'mobile_user_types_';
+
+async function fetchUserTypesFromSettings(productId: string): Promise<UserType[] | null> {
+  const { data } = await supabase
+    .from('settings')
+    .select('value')
+    .eq('key', `${SETTINGS_PREFIX}${productId}`)
+    .maybeSingle();
+  if (!data?.value) return null;
+  return Array.isArray(data.value) ? (data.value as UserType[]) : null;
+}
+
+async function saveUserTypesToSettings(
+  productId: string,
+  orgId: string,
+  userTypes: UserType[]
+): Promise<void> {
+  const key = `${SETTINGS_PREFIX}${productId}`;
+  await supabase.from('settings').delete()
+    .eq('organization_id', orgId)
+    .eq('key', key);
+  await supabase.from('settings').insert({
+    organization_id: orgId,
+    key,
+    value: userTypes,
+  });
+  // Mirror to AsyncStorage so UI never flickers while Supabase loads
+  await AsyncStorage.setItem(key, JSON.stringify(userTypes));
+}
+
+async function getUserTypes(productId: string, orgId: string): Promise<UserType[]> {
+  // 1. Try Supabase settings (authoritative, org-shared)
+  const remote = await fetchUserTypesFromSettings(productId);
+  if (remote !== null) return remote;
+  // 2. Fallback: AsyncStorage (handles offline + first open before any types saved)
+  const local = await AsyncStorage.getItem(`${SETTINGS_PREFIX}${productId}`);
+  return local ? JSON.parse(local) : [];
+}
+
+// ─── Products / App Profiles ──────────────────────────────────────────────────
 
 export async function getProfiles(): Promise<AppProfile[]> {
+  const cacheKey = 'profiles_list';
+  const cached = fromCache<AppProfile[]>(cacheKey);
+  if (cached) return cached;
+
+  // Fetch products + their features in 2 queries (avoids N+1)
   const { data: products, error } = await supabase
     .from('products')
-    .select('id, name, description, created_at, updated_at')
+    .select('id, name, description, organization_id, created_at, updated_at')
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
 
-  if (error || !products) return [];
+  if (error || !products?.length) return [];
 
-  return Promise.all(
+  const productIds = products.map(p => p.id);
+  const orgId: string = products[0].organization_id;
+
+  const [{ data: allFeatures }, { data: allSettings }] = await Promise.all([
+    supabase
+      .from('features')
+      .select('id, title, description, product_id')
+      .in('product_id', productIds)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: true }),
+    supabase
+      .from('settings')
+      .select('key, value')
+      .eq('organization_id', orgId)
+      .in('key', productIds.map(id => `${SETTINGS_PREFIX}${id}`)),
+  ]);
+
+  // Group features by product
+  const featuresByProduct: Record<string, typeof allFeatures> = {};
+  for (const f of allFeatures ?? []) {
+    if (!featuresByProduct[f.product_id]) featuresByProduct[f.product_id] = [];
+    featuresByProduct[f.product_id]!.push(f);
+  }
+
+  // Group user types by product
+  const userTypesByProduct: Record<string, UserType[]> = {};
+  for (const s of allSettings ?? []) {
+    const productId = (s.key as string).replace(SETTINGS_PREFIX, '');
+    userTypesByProduct[productId] = Array.isArray(s.value) ? (s.value as UserType[]) : [];
+  }
+
+  const result = await Promise.all(
     products.map(async (p) => {
-      const features = await getFeaturesForProduct(p.id);
-      const userTypes = await getUserTypes(p.id);
-      const contextSummary = await AsyncStorage.getItem(contextKey(p.id)) ?? undefined;
-
+      const rawFeatures = featuresByProduct[p.id] ?? [];
+      const features: Feature[] = await Promise.all(
+        rawFeatures.map(async (f) => {
+          const stepsJson = await AsyncStorage.getItem(stepsKey(f.id));
+          return {
+            id: f.id,
+            name: f.title,
+            description: f.description ?? '',
+            steps: stepsJson ? JSON.parse(stepsJson) : [],
+          };
+        })
+      );
+      const userTypes = userTypesByProduct[p.id] ?? [];
+      const contextSummary = (await AsyncStorage.getItem(contextKey(p.id))) ?? undefined;
       return {
         id: p.id,
         name: p.name,
@@ -36,23 +139,32 @@ export async function getProfiles(): Promise<AppProfile[]> {
       } satisfies AppProfile;
     })
   );
+
+  toCache(cacheKey, result);
+  return result;
 }
 
 export async function getProfile(id: string): Promise<AppProfile | null> {
+  const cacheKey = `profile_${id}`;
+  const cached = fromCache<AppProfile>(cacheKey);
+  if (cached) return cached;
+
   const { data: p, error } = await supabase
     .from('products')
-    .select('id, name, description, created_at, updated_at')
+    .select('id, name, description, organization_id, created_at, updated_at')
     .eq('id', id)
     .is('deleted_at', null)
     .single();
 
   if (error || !p) return null;
 
-  const features = await getFeaturesForProduct(p.id);
-  const userTypes = await getUserTypes(p.id);
-  const contextSummary = await AsyncStorage.getItem(contextKey(p.id)) ?? undefined;
+  const [features, userTypes] = await Promise.all([
+    getFeaturesForProduct(p.id),
+    getUserTypes(p.id, p.organization_id),
+  ]);
+  const contextSummary = (await AsyncStorage.getItem(contextKey(p.id))) ?? undefined;
 
-  return {
+  const profile: AppProfile = {
     id: p.id,
     name: p.name,
     description: p.description ?? '',
@@ -62,6 +174,9 @@ export async function getProfile(id: string): Promise<AppProfile | null> {
     createdAt: p.created_at,
     updatedAt: p.updated_at ?? p.created_at,
   };
+
+  toCache(cacheKey, profile);
+  return profile;
 }
 
 export async function saveProfile(
@@ -69,35 +184,85 @@ export async function saveProfile(
   userId: string,
   organizationId: string
 ): Promise<void> {
-  await supabase.from('products').upsert({
-    id: profile.id,
-    organization_id: organizationId,
-    name: profile.name,
-    description: profile.description,
-    created_by: userId,
-    updated_at: new Date().toISOString(),
-  });
+  // ── Product: insert if new, update if existing (preserves created_by) ──────
+  const { data: existing } = await supabase
+    .from('products')
+    .select('id')
+    .eq('id', profile.id)
+    .maybeSingle();
 
-  // Sync features
-  for (const feature of profile.features) {
-    await supabase.from('features').upsert({
-      id: feature.id,
-      product_id: profile.id,
-      organization_id: organizationId,
-      title: feature.name,
-      description: feature.description,
-      created_by: userId,
+  if (existing) {
+    await supabase.from('products').update({
+      name: profile.name,
+      description: profile.description,
       updated_at: new Date().toISOString(),
+    }).eq('id', profile.id);
+  } else {
+    await supabase.from('products').insert({
+      id: profile.id,
+      organization_id: organizationId,
+      name: profile.name,
+      description: profile.description,
+      created_by: userId,
     });
-    // Store flow steps locally
+  }
+
+  // ── Features: upsert active ones, soft-delete removed ones ────────────────
+  const incomingIds = new Set(profile.features.map(f => f.id));
+
+  // Soft-delete features that are no longer in the list
+  const { data: dbFeatures } = await supabase
+    .from('features')
+    .select('id')
+    .eq('product_id', profile.id)
+    .is('deleted_at', null);
+
+  const toDelete = (dbFeatures ?? []).filter(f => !incomingIds.has(f.id));
+  if (toDelete.length) {
+    await supabase.from('features').update({
+      deleted_at: new Date().toISOString(),
+      deleted_by: userId,
+    }).in('id', toDelete.map(f => f.id));
+  }
+
+  // Upsert remaining / new features
+  for (const feature of profile.features) {
+    const { data: existingF } = await supabase
+      .from('features')
+      .select('id')
+      .eq('id', feature.id)
+      .maybeSingle();
+
+    if (existingF) {
+      await supabase.from('features').update({
+        title: feature.name,
+        description: feature.description,
+        updated_at: new Date().toISOString(),
+      }).eq('id', feature.id);
+    } else {
+      await supabase.from('features').insert({
+        id: feature.id,
+        product_id: profile.id,
+        organization_id: organizationId,
+        title: feature.name,
+        description: feature.description,
+        created_by: userId,
+      });
+    }
+
     await AsyncStorage.setItem(stepsKey(feature.id), JSON.stringify(feature.steps));
   }
 
-  // Store mobile-only data locally
-  await saveUserTypes(profile.id, profile.userTypes);
+  // ── User types → Supabase settings (org-shared) ───────────────────────────
+  await saveUserTypesToSettings(profile.id, organizationId, profile.userTypes);
+
+  // ── Context summary → AsyncStorage (mobile AI hint only) ─────────────────
   if (profile.contextSummary) {
     await AsyncStorage.setItem(contextKey(profile.id), profile.contextSummary);
   }
+
+  // Invalidate cache
+  bust('profiles_list', `profile_${profile.id}`);
 }
 
 export async function deleteProfile(id: string, userId: string): Promise<void> {
@@ -105,6 +270,10 @@ export async function deleteProfile(id: string, userId: string): Promise<void> {
     deleted_at: new Date().toISOString(),
     deleted_by: userId,
   }).eq('id', id);
+
+  // Invalidate cache
+  bust('profiles_list', `profile_${id}`);
+  bustPrefix(`test_cases_${id}`);
 }
 
 // ─── Features ────────────────────────────────────────────────────────────────
@@ -132,20 +301,13 @@ async function getFeaturesForProduct(productId: string): Promise<Feature[]> {
   );
 }
 
-// ─── User Types (stored locally, scoped to product) ──────────────────────────
-
-async function getUserTypes(productId: string): Promise<UserType[]> {
-  const json = await AsyncStorage.getItem(userTypesKey(productId));
-  return json ? JSON.parse(json) : [];
-}
-
-async function saveUserTypes(productId: string, userTypes: UserType[]): Promise<void> {
-  await AsyncStorage.setItem(userTypesKey(productId), JSON.stringify(userTypes));
-}
-
-// ─── Test Cases ──────────────────────────────────────────────────────────────
+// ─── Test Cases ───────────────────────────────────────────────────────────────
 
 export async function getTestCases(productId?: string): Promise<TestCase[]> {
+  const cacheKey = `test_cases_${productId ?? 'all'}`;
+  const cached = fromCache<TestCase[]>(cacheKey);
+  if (cached) return cached;
+
   let query = supabase
     .from('test_cases')
     .select('id, product_id, feature_id, title, description, preconditions, expected_result, priority, test_type, steps, created_at, tags, features!feature_id(title)')
@@ -157,10 +319,16 @@ export async function getTestCases(productId?: string): Promise<TestCase[]> {
   const { data, error } = await query;
   if (error || !data) return [];
 
-  return data.map(row => mapRowToTestCase(row));
+  const result = data.map(row => mapRowToTestCase(row));
+  toCache(cacheKey, result);
+  return result;
 }
 
 export async function getTestCase(id: string): Promise<TestCase | null> {
+  const cacheKey = `test_case_${id}`;
+  const cached = fromCache<TestCase>(cacheKey);
+  if (cached) return cached;
+
   const { data, error } = await supabase
     .from('test_cases')
     .select('id, product_id, feature_id, title, description, preconditions, expected_result, priority, test_type, steps, created_at, tags, features!feature_id(title)')
@@ -169,7 +337,9 @@ export async function getTestCase(id: string): Promise<TestCase | null> {
     .single();
 
   if (error || !data) return null;
-  return mapRowToTestCase(data);
+  const result = mapRowToTestCase(data);
+  toCache(cacheKey, result);
+  return result;
 }
 
 export async function saveTestCase(
@@ -178,12 +348,11 @@ export async function saveTestCase(
   organizationId: string,
   allFeatures: Feature[]
 ): Promise<void> {
-  // Resolve feature ID from name
+  // Resolve feature by name → ID
   const matchedFeature = allFeatures.find(f => f.name === testCase.feature);
   let featureId = matchedFeature?.id;
 
   if (!featureId) {
-    // Feature not found — create it
     featureId = `feat_${Date.now()}`;
     await supabase.from('features').insert({
       id: featureId,
@@ -193,9 +362,11 @@ export async function saveTestCase(
       description: '',
       created_by: userId,
     });
+    // New feature means profile cache is stale
+    bust('profiles_list', `profile_${testCase.appProfileId}`);
   }
 
-  // Ensure a "Mobile Tests" user story exists for this feature
+  // Ensure "Mobile Tests" user story exists — safe for concurrent calls
   const userStoryId = await ensureUserStory(featureId, testCase.appProfileId, organizationId, userId);
 
   const steps = testCase.steps.map(s => ({
@@ -207,32 +378,60 @@ export async function saveTestCase(
     status: 'pending',
   }));
 
-  const tags = testCase.tags ?? [];
+  // Insert new / update existing (preserves created_by on update via separate paths)
+  const { data: existingTc } = await supabase
+    .from('test_cases')
+    .select('id')
+    .eq('id', testCase.id)
+    .maybeSingle();
 
-  await supabase.from('test_cases').upsert({
-    id: testCase.id,
-    user_story_id: userStoryId,
-    feature_id: featureId,
-    product_id: testCase.appProfileId,
-    organization_id: organizationId,
-    title: testCase.title,
-    description: testCase.description,
-    preconditions: testCase.preconditions.join('\n'),
-    expected_result: testCase.expectedResult,
-    priority: testCase.priority ?? 'medium',
-    test_type: mapTestType(testCase.testType),
-    steps,
-    created_by: userId,
-    updated_at: new Date().toISOString(),
-    tags: testCase.tags ?? [],
-  });
+  if (existingTc) {
+    await supabase.from('test_cases').update({
+      title: testCase.title,
+      description: testCase.description,
+      preconditions: testCase.preconditions.join('\n'),
+      expected_result: testCase.expectedResult,
+      priority: testCase.priority ?? 'medium',
+      test_type: mapTestType(testCase.testType),
+      steps,
+      updated_at: new Date().toISOString(),
+      tags: testCase.tags ?? [],
+    }).eq('id', testCase.id);
+  } else {
+    await supabase.from('test_cases').insert({
+      id: testCase.id,
+      user_story_id: userStoryId,
+      feature_id: featureId,
+      product_id: testCase.appProfileId,
+      organization_id: organizationId,
+      title: testCase.title,
+      description: testCase.description,
+      preconditions: testCase.preconditions.join('\n'),
+      expected_result: testCase.expectedResult,
+      priority: testCase.priority ?? 'medium',
+      test_type: mapTestType(testCase.testType),
+      steps,
+      created_by: userId,
+      tags: testCase.tags ?? [],
+    });
+  }
+
+  // Invalidate caches
+  bust(`test_case_${testCase.id}`);
+  bust(`test_cases_${testCase.appProfileId}`, 'test_cases_all');
 }
 
 export async function deleteTestCase(id: string, userId: string): Promise<void> {
+  // Need product_id for cache invalidation before we delete
+  const tc = await getTestCase(id);
+
   await supabase.from('test_cases').update({
     deleted_at: new Date().toISOString(),
     deleted_by: userId,
   }).eq('id', id);
+
+  bust(`test_case_${id}`);
+  if (tc) bust(`test_cases_${tc.appProfileId}`, 'test_cases_all');
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -243,18 +442,9 @@ async function ensureUserStory(
   organizationId: string,
   userId: string
 ): Promise<string> {
-  const { data } = await supabase
-    .from('user_stories')
-    .select('id')
-    .eq('feature_id', featureId)
-    .eq('title', 'Mobile Tests')
-    .is('deleted_at', null)
-    .single();
-
-  if (data?.id) return data.id;
-
   const id = `us_mobile_${featureId}`;
-  await supabase.from('user_stories').insert({
+  // ignoreDuplicates = ON CONFLICT DO NOTHING — safe to call repeatedly
+  await supabase.from('user_stories').upsert({
     id,
     feature_id: featureId,
     product_id: productId,
@@ -262,7 +452,7 @@ async function ensureUserStory(
     title: 'Mobile Tests',
     description: 'Test cases created from the Testify mobile app.',
     created_by: userId,
-  });
+  }, { onConflict: 'id', ignoreDuplicates: true });
   return id;
 }
 
@@ -279,23 +469,19 @@ function mapTestType(t?: string): string {
 
 function mapRowToTestCase(row: Record<string, unknown>): TestCase {
   const rawSteps = Array.isArray(row.steps) ? row.steps : [];
-  const steps = rawSteps.map((s: Record<string, unknown>, i: number) => ({
+  const steps = (rawSteps as Record<string, unknown>[]).map((s, i) => ({
     order: (s.stepNumber as number) ?? i + 1,
     action: (s.action as string) ?? '',
     expectedResult: (s.expectedResult as string) ?? '',
     automationHint: s.automationHint as string | undefined,
   }));
 
-  const preconditions = typeof row.preconditions === 'string' && row.preconditions
-    ? row.preconditions.split('\n').filter(Boolean)
-    : [];
+  const preconditions =
+    typeof row.preconditions === 'string' && row.preconditions
+      ? row.preconditions.split('\n').filter(Boolean)
+      : [];
 
-  let tags: string[] = [];
-  if (typeof row.tags === 'string') {
-    try { tags = JSON.parse(row.tags); } catch { tags = []; }
-  } else if (Array.isArray(row.tags)) {
-    tags = row.tags;
-  }
+  const tags: string[] = Array.isArray(row.tags) ? (row.tags as string[]) : [];
 
   return {
     id: row.id as string,

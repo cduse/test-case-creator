@@ -20,11 +20,13 @@ const EMPTY_FEATURE = (): Feature => ({ id: generateId(), name: '', description:
 function FeatureModal({
   visible,
   feature,
+  saving,
   onSave,
   onClose,
 }: {
   visible: boolean;
   feature: Feature | null;
+  saving: boolean;
   onSave: (f: Feature) => void;
   onClose: () => void;
 }) {
@@ -174,8 +176,10 @@ function FeatureModal({
               </TouchableOpacity>
             </View>
 
-            <TouchableOpacity style={modal.saveBtn} onPress={handleSave}>
-              <Text style={modal.saveBtnText}>Save Feature</Text>
+            <TouchableOpacity style={[modal.saveBtn, saving && { opacity: 0.6 }]} onPress={handleSave} disabled={saving}>
+              {saving
+                ? <ActivityIndicator color={Colors.white} />
+                : <Text style={modal.saveBtnText}>Save Feature</Text>}
             </TouchableOpacity>
           </ScrollView>
         </KeyboardAvoidingView>
@@ -220,6 +224,7 @@ export default function FeaturesScreen() {
   const { user } = useAuth();
   const [features, setFeatures] = useState<Feature[]>([]);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [search, setSearch] = useState('');
   const [modalVisible, setModalVisible] = useState(false);
   const [editingFeature, setEditingFeature] = useState<Feature | null>(null);
@@ -247,7 +252,12 @@ export default function FeaturesScreen() {
       ? features.map(f => f.id === feature.id ? feature : f)
       : [...features, feature];
     setFeatures(updated);
-    await persist(updated);
+    setSaving(true);
+    try {
+      await persist(updated);
+    } finally {
+      setSaving(false);
+    }
     setModalVisible(false);
     setEditingFeature(null);
   }
@@ -340,6 +350,7 @@ export default function FeaturesScreen() {
       <FeatureModal
         visible={modalVisible}
         feature={editingFeature}
+        saving={saving}
         onSave={handleSave}
         onClose={() => {
           setModalVisible(false);
