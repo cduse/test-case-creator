@@ -43,14 +43,16 @@ async function saveUserTypesToSettings(
   userTypes: UserType[]
 ): Promise<void> {
   const key = `${SETTINGS_PREFIX}${productId}`;
-  await supabase.from('settings').delete()
-    .eq('organization_id', orgId)
-    .eq('key', key);
-  await supabase.from('settings').insert({
+  // Single upsert using the unique constraint — atomic, no DELETE+INSERT gap
+  const { error } = await supabase.from('settings').upsert({
     organization_id: orgId,
     key,
     value: userTypes,
-  });
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'organization_id,key' });
+
+  if (error) throw new Error(`Failed to save user types: ${error.message}`);
+
   // Mirror to AsyncStorage so UI never flickers while Supabase loads
   await AsyncStorage.setItem(key, JSON.stringify(userTypes));
 }
@@ -187,7 +189,7 @@ export async function saveProfile(
   const now = new Date().toISOString();
 
   // ── Product: single upsert (no SELECT round-trip) ─────────────────────────
-  await supabase.from('products').upsert({
+  const { error: productError } = await supabase.from('products').upsert({
     id: profile.id,
     organization_id: organizationId,
     name: profile.name,
@@ -195,6 +197,7 @@ export async function saveProfile(
     created_by: userId,
     updated_at: now,
   }, { onConflict: 'id' });
+  if (productError) throw new Error(`Failed to save product: ${productError.message}`);
 
   // ── Features: fetch existing IDs once, then batch write ───────────────────
   const { data: dbFeatures } = await supabase
@@ -380,7 +383,7 @@ export async function saveTestCase(
   }));
 
   // Single upsert — no existence-check SELECT needed
-  await supabase.from('test_cases').upsert({
+  const { error: tcError } = await supabase.from('test_cases').upsert({
     id: testCase.id,
     user_story_id: userStoryId,
     feature_id: featureId,
@@ -397,6 +400,7 @@ export async function saveTestCase(
     updated_at: new Date().toISOString(),
     tags: testCase.tags ?? [],
   }, { onConflict: 'id' });
+  if (tcError) throw new Error(`Failed to save test case: ${tcError.message}`);
 
   // Invalidate caches
   bust(`test_case_${testCase.id}`);
