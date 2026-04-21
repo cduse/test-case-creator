@@ -32,7 +32,8 @@
         {
           "microphonePermission": "Allow Test Case Creator to record audio for voice input."
         }
-      ]
+      ],
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true
