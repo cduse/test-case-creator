@@ -184,82 +184,83 @@ export async function saveProfile(
   userId: string,
   organizationId: string
 ): Promise<void> {
-  // ── Product: insert if new, update if existing (preserves created_by) ──────
-  const { data: existing } = await supabase
-    .from('products')
-    .select('id')
-    .eq('id', profile.id)
-    .maybeSingle();
+  const now = new Date().toISOString();
 
-  if (existing) {
-    await supabase.from('products').update({
-      name: profile.name,
-      description: profile.description,
-      updated_at: new Date().toISOString(),
-    }).eq('id', profile.id);
-  } else {
-    await supabase.from('products').insert({
-      id: profile.id,
-      organization_id: organizationId,
-      name: profile.name,
-      description: profile.description,
-      created_by: userId,
-    });
-  }
+  // ── Product: single upsert (no SELECT round-trip) ─────────────────────────
+  await supabase.from('products').upsert({
+    id: profile.id,
+    organization_id: organizationId,
+    name: profile.name,
+    description: profile.description,
+    created_by: userId,
+    updated_at: now,
+  }, { onConflict: 'id' });
 
-  // ── Features: upsert active ones, soft-delete removed ones ────────────────
-  const incomingIds = new Set(profile.features.map(f => f.id));
-
-  // Soft-delete features that are no longer in the list
+  // ── Features: fetch existing IDs once, then batch write ───────────────────
   const { data: dbFeatures } = await supabase
     .from('features')
     .select('id')
     .eq('product_id', profile.id)
     .is('deleted_at', null);
 
+  const existingIds = new Set((dbFeatures ?? []).map(f => f.id));
+  const incomingIds = new Set(profile.features.map(f => f.id));
+
+  // Soft-delete features removed from the list
   const toDelete = (dbFeatures ?? []).filter(f => !incomingIds.has(f.id));
-  if (toDelete.length) {
-    await supabase.from('features').update({
-      deleted_at: new Date().toISOString(),
-      deleted_by: userId,
-    }).in('id', toDelete.map(f => f.id));
-  }
 
-  // Upsert remaining / new features
-  for (const feature of profile.features) {
-    const { data: existingF } = await supabase
-      .from('features')
-      .select('id')
-      .eq('id', feature.id)
-      .maybeSingle();
+  const newFeatures = profile.features.filter(f => !existingIds.has(f.id));
+  const updatedFeatures = profile.features.filter(f => existingIds.has(f.id));
 
-    if (existingF) {
-      await supabase.from('features').update({
-        title: feature.name,
-        description: feature.description,
-        updated_at: new Date().toISOString(),
-      }).eq('id', feature.id);
-    } else {
-      await supabase.from('features').insert({
-        id: feature.id,
-        product_id: profile.id,
-        organization_id: organizationId,
-        title: feature.name,
-        description: feature.description,
-        created_by: userId,
-      });
-    }
+  await Promise.all([
+    // Batch soft-delete removed features
+    toDelete.length
+      ? supabase.from('features').update({ deleted_at: now, deleted_by: userId })
+          .in('id', toDelete.map(f => f.id))
+      : Promise.resolve(),
 
-    await AsyncStorage.setItem(stepsKey(feature.id), JSON.stringify(feature.steps));
-  }
+    // Batch insert new features
+    newFeatures.length
+      ? supabase.from('features').insert(
+          newFeatures.map(f => ({
+            id: f.id,
+            product_id: profile.id,
+            organization_id: organizationId,
+            title: f.name,
+            description: f.description,
+            created_by: userId,
+          }))
+        )
+      : Promise.resolve(),
 
-  // ── User types → Supabase settings (org-shared) ───────────────────────────
-  await saveUserTypesToSettings(profile.id, organizationId, profile.userTypes);
+    // Batch update existing features
+    updatedFeatures.length
+      ? supabase.from('features').upsert(
+          updatedFeatures.map(f => ({
+            id: f.id,
+            product_id: profile.id,
+            organization_id: organizationId,
+            title: f.name,
+            description: f.description,
+            updated_at: now,
+          })),
+          { onConflict: 'id' }
+        )
+      : Promise.resolve(),
 
-  // ── Context summary → AsyncStorage (mobile AI hint only) ─────────────────
-  if (profile.contextSummary) {
-    await AsyncStorage.setItem(contextKey(profile.id), profile.contextSummary);
-  }
+    // Persist feature steps locally (AsyncStorage, non-blocking)
+    ...profile.features.map(f =>
+      AsyncStorage.setItem(stepsKey(f.id), JSON.stringify(f.steps))
+    ),
+
+    // User types → Supabase settings (org-shared)
+    saveUserTypesToSettings(profile.id, organizationId, profile.userTypes),
+
+    // Context summary → AsyncStorage
+    profile.contextSummary
+      ? AsyncStorage.setItem(contextKey(profile.id), profile.contextSummary)
+      : Promise.resolve(),
+  ]);
 
   // Invalidate cache
   bust('profiles_list', `profile_${profile.id}`);
@@ -378,43 +379,24 @@ export async function saveTestCase(
     status: 'pending',
   }));
 
-  // Insert new / update existing (preserves created_by on update via separate paths)
-  const { data: existingTc } = await supabase
-    .from('test_cases')
-    .select('id')
-    .eq('id', testCase.id)
-    .maybeSingle();
-
-  if (existingTc) {
-    await supabase.from('test_cases').update({
-      title: testCase.title,
-      description: testCase.description,
-      preconditions: testCase.preconditions.join('\n'),
-      expected_result: testCase.expectedResult,
-      priority: testCase.priority ?? 'medium',
-      test_type: mapTestType(testCase.testType),
-      steps,
-      updated_at: new Date().toISOString(),
-      tags: testCase.tags ?? [],
-    }).eq('id', testCase.id);
-  } else {
-    await supabase.from('test_cases').insert({
-      id: testCase.id,
-      user_story_id: userStoryId,
-      feature_id: featureId,
-      product_id: testCase.appProfileId,
-      organization_id: organizationId,
-      title: testCase.title,
-      description: testCase.description,
-      preconditions: testCase.preconditions.join('\n'),
-      expected_result: testCase.expectedResult,
-      priority: testCase.priority ?? 'medium',
-      test_type: mapTestType(testCase.testType),
-      steps,
-      created_by: userId,
-      tags: testCase.tags ?? [],
-    });
-  }
+  // Single upsert — no existence-check SELECT needed
+  await supabase.from('test_cases').upsert({
+    id: testCase.id,
+    user_story_id: userStoryId,
+    feature_id: featureId,
+    product_id: testCase.appProfileId,
+    organization_id: organizationId,
+    title: testCase.title,
+    description: testCase.description,
+    preconditions: testCase.preconditions.join('\n'),
+    expected_result: testCase.expectedResult,
+    priority: testCase.priority ?? 'medium',
+    test_type: mapTestType(testCase.testType),
+    steps,
+    created_by: userId,
+    updated_at: new Date().toISOString(),
+    tags: testCase.tags ?? [],
+  }, { onConflict: 'id' });
 
   // Invalidate caches
   bust(`test_case_${testCase.id}`);
