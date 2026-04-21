@@ -14,6 +14,7 @@
     "expo": "~52.0.28",
     "expo-asset": "~11.0.5",
     "expo-av": "~15.0.2",
+    "expo-font": "~13.0.4",
     "expo-clipboard": "~7.0.1",
     "expo-file-system": "~18.0.10",
     "expo-router": "~4.0.17",
