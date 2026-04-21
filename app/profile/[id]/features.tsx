@@ -7,7 +7,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { getProfile, saveProfile } from '../../../services/storage';
+import { getProfile, saveProfile } from '../../../services/supabase-db';
+import { useAuth } from '../../../context/auth';
+import { transcribeAudio, parseFeatureFromTranscript } from '../../../services/openai';
+import VoiceRecorder from '../../../components/VoiceRecorder';
 import { Feature } from '../../../types';
 import { generateId } from '../../../utils/id';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../../constants/theme';
@@ -27,11 +30,14 @@ function FeatureModal({
 }) {
   const [draft, setDraft] = useState<Feature>(feature ?? EMPTY_FEATURE());
   const [newStep, setNewStep] = useState('');
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
 
   useCallback(() => {
     if (visible) {
       setDraft(feature ?? EMPTY_FEATURE());
       setNewStep('');
+      setVoiceMode(false);
     }
   }, [visible, feature]);
 
@@ -42,6 +48,25 @@ function FeatureModal({
     if (visible) {
       setDraft(feature ?? EMPTY_FEATURE());
       setNewStep('');
+      setVoiceMode(false);
+    }
+  }
+
+  async function handleVoiceComplete(uri: string) {
+    setVoiceMode(false);
+    setTranscribing(true);
+    try {
+      const transcript = await transcribeAudio(uri);
+      const parsed = await parseFeatureFromTranscript(transcript);
+      setDraft(d => ({
+        ...d,
+        description: parsed.description,
+        steps: parsed.steps.length > 0 ? parsed.steps : d.steps,
+      }));
+    } catch (e: any) {
+      Alert.alert('Voice Input Failed', e.message);
+    } finally {
+      setTranscribing(false);
     }
   }
 
@@ -85,16 +110,43 @@ function FeatureModal({
               autoFocus
             />
 
-            <Text style={modal.label}>Description</Text>
-            <TextInput
-              style={[modal.input, modal.textArea]}
-              value={draft.description}
-              onChangeText={v => setDraft(d => ({ ...d, description: v }))}
-              placeholder="Describe what this feature does and any key details..."
-              placeholderTextColor={Colors.textMuted}
-              multiline
-              numberOfLines={3}
-            />
+            <View style={modal.descriptionHeader}>
+              <Text style={modal.label}>Description & Key Steps</Text>
+              <TouchableOpacity
+                style={[modal.voiceBtn, voiceMode && modal.voiceBtnActive]}
+                onPress={() => setVoiceMode(v => !v)}
+                disabled={transcribing}
+              >
+                <Ionicons
+                  name={voiceMode ? 'close-circle' : 'mic-outline'}
+                  size={16}
+                  color={voiceMode ? Colors.recording : Colors.primary}
+                />
+                <Text style={[modal.voiceBtnText, voiceMode && modal.voiceBtnTextActive]}>
+                  {transcribing ? 'Transcribing...' : voiceMode ? 'Cancel' : 'Voice'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {voiceMode ? (
+              <View style={modal.voiceContainer}>
+                <Text style={modal.voiceHint}>
+                  Describe the feature and mention any key steps — e.g. "The buy airtime feature allows users to purchase airtime. First the user selects an amount, then confirms the transaction..."
+                </Text>
+                <VoiceRecorder onTranscriptionComplete={handleVoiceComplete} disabled={transcribing} />
+              </View>
+            ) : (
+              <TextInput
+                style={[modal.input, modal.textArea]}
+                value={draft.description}
+                onChangeText={v => setDraft(d => ({ ...d, description: v }))}
+                placeholder="Describe what this feature does and any key details..."
+                placeholderTextColor={Colors.textMuted}
+                multiline
+                numberOfLines={3}
+                editable={!transcribing}
+              />
+            )}
 
             <Text style={modal.label}>Key Flow Steps</Text>
             {draft.steps.map((step, i) => (
@@ -165,6 +217,7 @@ function FeatureCard({ feature, onEdit, onDelete }: {
 
 export default function FeaturesScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const { user } = useAuth();
   const [features, setFeatures] = useState<Feature[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -185,7 +238,7 @@ export default function FeaturesScreen() {
   async function persist(updated: Feature[]) {
     const profile = await getProfile(id!);
     if (!profile) return;
-    await saveProfile({ ...profile, features: updated, updatedAt: new Date().toISOString() });
+    await saveProfile({ ...profile, features: updated, updatedAt: new Date().toISOString() }, user!.id, user!.organizationId);
   }
 
   async function handleSave(feature: Feature) {
@@ -372,4 +425,15 @@ const modal = StyleSheet.create({
     padding: Spacing.md, alignItems: 'center', marginTop: Spacing.md,
   },
   saveBtnText: { color: Colors.white, fontWeight: '700', fontSize: FontSize.md },
+  descriptionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: Spacing.xs },
+  voiceBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: Colors.primary + '22', borderRadius: BorderRadius.sm,
+    paddingHorizontal: Spacing.sm, paddingVertical: 4,
+  },
+  voiceBtnActive: { backgroundColor: Colors.recording + '22' },
+  voiceBtnText: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.primary },
+  voiceBtnTextActive: { color: Colors.recording },
+  voiceContainer: { gap: Spacing.sm },
+  voiceHint: { fontSize: FontSize.xs, color: Colors.textMuted, lineHeight: 18, fontStyle: 'italic' },
 });

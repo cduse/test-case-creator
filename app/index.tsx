@@ -6,9 +6,10 @@ import {
 import { useFocusEffect, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { getProfiles, deleteProfile } from '../services/storage';
+import { getProfiles, deleteProfile } from '../services/supabase-db';
 import { AppProfile } from '../types';
 import { Colors, Spacing, FontSize, BorderRadius } from '../constants/theme';
+import { useAuth } from '../context/auth';
 
 function Pill({ label, color }: { label: string; color: string }) {
   return (
@@ -48,11 +49,13 @@ function ProfileCard({ profile, onPress, onDelete }: {
 
 export default function HomeScreen() {
   const router = useRouter();
+  const { user, signOut } = useAuth();
   const [profiles, setProfiles] = useState<AppProfile[]>([]);
   const [loading, setLoading] = useState(true);
 
   useFocusEffect(
     useCallback(() => {
+      setLoading(true);
       getProfiles().then(p => {
         setProfiles(p);
         setLoading(false);
@@ -62,14 +65,14 @@ export default function HomeScreen() {
 
   function handleDelete(profile: AppProfile) {
     Alert.alert(
-      'Delete Profile',
+      'Delete Product',
       `Delete "${profile.name}" and all its test cases?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete', style: 'destructive',
           onPress: async () => {
-            await deleteProfile(profile.id);
+            await deleteProfile(profile.id, user!.id);
             setProfiles(prev => prev.filter(p => p.id !== profile.id));
           },
         },
@@ -77,13 +80,32 @@ export default function HomeScreen() {
     );
   }
 
+  function handleSignOut() {
+    Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Sign Out', style: 'destructive', onPress: signOut },
+    ]);
+  }
+
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
       <View style={styles.headerActions}>
-        <Text style={styles.sectionLabel}>App Profiles</Text>
-        <TouchableOpacity style={styles.settingsBtn} onPress={() => router.push('/settings')}>
-          <Ionicons name="settings-outline" size={22} color={Colors.textSecondary} />
-        </TouchableOpacity>
+        <View>
+          <Text style={styles.sectionLabel}>Products</Text>
+          {user && (
+            <Text style={styles.orgLabel} numberOfLines={1}>
+              {user.name}
+            </Text>
+          )}
+        </View>
+        <View style={styles.headerRight}>
+          <TouchableOpacity style={styles.iconBtn} onPress={() => router.push('/settings')}>
+            <Ionicons name="settings-outline" size={22} color={Colors.textSecondary} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.iconBtn} onPress={handleSignOut}>
+            <Ionicons name="log-out-outline" size={22} color={Colors.textSecondary} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {loading ? (
@@ -91,12 +113,12 @@ export default function HomeScreen() {
       ) : profiles.length === 0 ? (
         <View style={styles.empty}>
           <Ionicons name="clipboard-outline" size={56} color={Colors.textMuted} />
-          <Text style={styles.emptyTitle}>No App Profiles Yet</Text>
+          <Text style={styles.emptyTitle}>No Products Yet</Text>
           <Text style={styles.emptySubtitle}>
-            Create a profile for each app you want to build a regression suite for.
+            Create a product for each app you want to build a regression suite for.
           </Text>
           <TouchableOpacity style={styles.emptyButton} onPress={() => router.push('/profile/create')}>
-            <Text style={styles.emptyButtonText}>Create Your First Profile</Text>
+            <Text style={styles.emptyButtonText}>Create Your First Product</Text>
           </TouchableOpacity>
         </View>
       ) : (
@@ -130,7 +152,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md, paddingTop: Spacing.md, paddingBottom: Spacing.sm,
   },
   sectionLabel: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.textSecondary, letterSpacing: 1, textTransform: 'uppercase' },
-  settingsBtn: { padding: Spacing.xs },
+  orgLabel: { fontSize: FontSize.xs, color: Colors.textMuted, marginTop: 2, maxWidth: 200 },
+  headerRight: { flexDirection: 'row', gap: Spacing.xs },
+  iconBtn: { padding: Spacing.xs },
   list: { padding: Spacing.md, gap: Spacing.sm },
   card: {
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,

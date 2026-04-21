@@ -5,16 +5,18 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
-import { saveProfile, getProfile } from '../../services/storage';
+import { saveProfile, getProfile } from '../../services/supabase-db';
 import { AppProfile } from '../../types';
 import { generateId } from '../../utils/id';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../constants/theme';
+import { useAuth } from '../../context/auth';
 
 export default function CreateProfileScreen() {
   const router = useRouter();
   const navigation = useNavigation();
   const { id } = useLocalSearchParams<{ id?: string }>();
   const isEditing = !!id;
+  const { user } = useAuth();
 
   const [loading, setLoading] = useState(isEditing);
   const [existingProfile, setExistingProfile] = useState<AppProfile | null>(null);
@@ -23,7 +25,7 @@ export default function CreateProfileScreen() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    navigation.setOptions({ title: isEditing ? 'Edit Profile' : 'New App Profile' });
+    navigation.setOptions({ title: isEditing ? 'Edit Product' : 'New Product' });
   }, [isEditing]);
 
   useEffect(() => {
@@ -57,7 +59,7 @@ export default function CreateProfileScreen() {
         createdAt: existingProfile?.createdAt ?? now,
         updatedAt: now,
       };
-      await saveProfile(profile);
+      await saveProfile(profile, user!.id, user!.organizationId);
       router.replace(`/profile/${profile.id}`);
     } catch (e: any) {
       Alert.alert('Error', e.message);

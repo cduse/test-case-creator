@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "Test Case Creator",
-    "slug": "test-case-creator",
+    "name": "Testify",
+    "slug": "testify-qa",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "scheme": "testcasecreator",
+    "scheme": "testifyqa",
     "userInterfaceStyle": "dark",
     "splash": {
       "image": "./assets/splash.png",
@@ -17,7 +17,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0F1117"
       },
-      "package": "com.testcasecreator.app",
+      "package": "com.testifyqa.app",
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.INTERNET"
@@ -30,7 +30,7 @@
       [
         "expo-av",
         {
-          "microphonePermission": "Allow Test Case Creator to record audio for voice input."
+          "microphonePermission": "Allow Testify to record audio for voice input."
         }
       ],
       "expo-asset"

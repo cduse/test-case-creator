@@ -181,6 +181,52 @@ Return a JSON object with a "testCases" array (even if there is only one):
   return cases.map(parseGeneratedCase);
 }
 
+export async function parseFeatureFromTranscript(
+  transcript: string
+): Promise<{ description: string; steps: string[] }> {
+  if (!hasApiKey()) {
+    // Fallback: basic heuristic split without AI
+    const lines = transcript.split(/[\n.!?]+/).map(l => l.trim()).filter(Boolean);
+    const stepKeywords = /^(step\s*\d|first|second|third|then|next|after|finally|\d+[\)\.:])/i;
+    const stepLines = lines.filter(l => stepKeywords.test(l));
+    if (stepLines.length >= 2) {
+      const firstStepIdx = lines.findIndex(l => stepKeywords.test(l));
+      const description = lines.slice(0, Math.max(1, firstStepIdx)).join('. ');
+      return { description: description || transcript, steps: stepLines };
+    }
+    return { description: transcript, steps: [] };
+  }
+
+  const data = await openaiPost('chat/completions', {
+    model: 'gpt-4o',
+    messages: [
+      {
+        role: 'system',
+        content: `You are a QA assistant helping structure feature descriptions.
+Given a voice transcript, extract:
+1. A concise feature description (1-3 sentences summarising what the feature does)
+2. Key flow steps (the main actions in order, if the user described a flow)
+
+Return ONLY valid JSON: { "description": "...", "steps": ["step 1", "step 2", ...] }
+If no clear steps were described, return steps as an empty array.`,
+      },
+      { role: 'user', content: `Transcript: "${transcript}"` },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.2,
+  });
+
+  try {
+    const result = JSON.parse(data.choices[0].message.content);
+    return {
+      description: result.description ?? transcript,
+      steps: Array.isArray(result.steps) ? result.steps : [],
+    };
+  } catch {
+    return { description: transcript, steps: [] };
+  }
+}
+
 export async function generateContextSummary(profile: Omit<AppProfile, 'contextSummary'>): Promise<string> {
   const userTypesText = profile.userTypes.map(ut => `- ${ut.name}: ${ut.description}`).join('\n');
   const featuresText = profile.features.map(f => {

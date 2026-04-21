@@ -8,7 +8,9 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
-import { getTestCase, getProfile, deleteTestCase, formatTestCasesAsText, buildAutomationExport } from '../../services/storage';
+import { getTestCase, getProfile, deleteTestCase } from '../../services/supabase-db';
+import { formatTestCasesAsText, buildAutomationExport } from '../../services/storage';
+import { useAuth } from '../../context/auth';
 import { TestCase, AppProfile, Priority, TestType } from '../../types';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../constants/theme';
@@ -64,6 +66,7 @@ function StepRow({ step }: { step: TestCase['steps'][number] }) {
 export default function TestCaseDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const { user } = useAuth();
   const [testCase, setTestCase] = useState<TestCase | null>(null);
   const [profile, setProfile] = useState<AppProfile | null>(null);
   const [copied, setCopied] = useState(false);
@@ -116,7 +119,7 @@ export default function TestCaseDetailScreen() {
       {
         text: 'Delete', style: 'destructive',
         onPress: async () => {
-          await deleteTestCase(testCase.id);
+          await deleteTestCase(testCase.id, user!.id);
           router.back();
         },
       },

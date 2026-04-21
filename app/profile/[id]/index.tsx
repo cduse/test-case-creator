@@ -9,9 +9,10 @@ import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import {
-  getProfile, getTestCases, deleteTestCase, saveProfile,
-  formatTestCasesAsText, buildAutomationExport, deleteProfile,
-} from '../../../services/storage';
+  getProfile, getTestCases, deleteTestCase, saveProfile, deleteProfile,
+} from '../../../services/supabase-db';
+import { formatTestCasesAsText, buildAutomationExport } from '../../../services/storage';
+import { useAuth } from '../../../context/auth';
 import { generateContextSummary, hasApiKey } from '../../../services/openai';
 import { AppProfile, TestCase } from '../../../types';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../../constants/theme';
@@ -61,6 +62,7 @@ function NavRow({ icon, label, count, onPress }: {
 export default function ProfileDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const { user } = useAuth();
   const [profile, setProfile] = useState<AppProfile | null>(null);
   const [testCases, setTestCases] = useState<TestCase[]>([]);
   const [generatingContext, setGeneratingContext] = useState(false);
@@ -87,7 +89,7 @@ export default function ProfileDetailScreen() {
     try {
       const summary = await generateContextSummary(profile);
       const updated = { ...profile, contextSummary: summary, updatedAt: new Date().toISOString() };
-      await saveProfile(updated);
+      await saveProfile(updated, user!.id, user!.organizationId);
       setProfile(updated);
       setContextOpen(true);
     } catch (e: any) {
@@ -103,7 +105,7 @@ export default function ProfileDetailScreen() {
       {
         text: 'Delete', style: 'destructive',
         onPress: async () => {
-          await deleteTestCase(tc.id);
+          await deleteTestCase(tc.id, user!.id);
           setTestCases(prev => prev.filter(t => t.id !== tc.id));
         },
       },
@@ -120,7 +122,7 @@ export default function ProfileDetailScreen() {
         {
           text: 'Delete', style: 'destructive',
           onPress: async () => {
-            await deleteProfile(profile.id);
+            await deleteProfile(profile.id, user!.id);
             router.replace('/');
           },
         },

@@ -5,7 +5,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { getProfile, saveTestCase } from '../../services/storage';
+import { getProfile, saveTestCase } from '../../services/supabase-db';
+import { useAuth } from '../../context/auth';
 import { transcribeAudio, generateTestCases, hasApiKey } from '../../services/openai';
 import { AppProfile, GeneratedTestCase, TestCase } from '../../types';
 import { generateId } from '../../utils/id';
@@ -18,6 +19,7 @@ type Phase = 'record' | 'transcribing' | 'review' | 'generating' | 'edit';
 export default function CreateTestCaseScreen() {
   const { profileId } = useLocalSearchParams<{ profileId: string }>();
   const router = useRouter();
+  const { user } = useAuth();
   const [profile, setProfile] = useState<AppProfile | null>(null);
   const [phase, setPhase] = useState<Phase>('record');
   const [transcript, setTranscript] = useState('');
@@ -81,7 +83,7 @@ export default function CreateTestCaseScreen() {
           createdAt: now,
           ...tc,
         };
-        await saveTestCase(testCase);
+        await saveTestCase(testCase, user!.id, user!.organizationId, profile!.features);
       }
       // Navigate back to the profile so they can see all saved cases
       router.replace(`/profile/${profileId}`);

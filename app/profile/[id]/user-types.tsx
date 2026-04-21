@@ -7,7 +7,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { getProfile, saveProfile } from '../../../services/storage';
+import { getProfile, saveProfile } from '../../../services/supabase-db';
+import { useAuth } from '../../../context/auth';
 import { UserType } from '../../../types';
 import { generateId } from '../../../utils/id';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../../constants/theme';
@@ -113,6 +114,7 @@ function UserTypeCard({ userType, onEdit, onDelete }: {
 
 export default function UserTypesScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const { user } = useAuth();
   const [userTypes, setUserTypes] = useState<UserType[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -133,7 +135,7 @@ export default function UserTypesScreen() {
   async function persist(updated: UserType[]) {
     const profile = await getProfile(id!);
     if (!profile) return;
-    await saveProfile({ ...profile, userTypes: updated, updatedAt: new Date().toISOString() });
+    await saveProfile({ ...profile, userTypes: updated, updatedAt: new Date().toISOString() }, user!.id, user!.organizationId);
   }
 
   async function handleSave(userType: UserType) {
