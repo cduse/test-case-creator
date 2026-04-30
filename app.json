@@ -33,7 +33,8 @@
           "microphonePermission": "Allow Testify to record audio for voice input."
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      "expo-font"
     ],
     "experiments": {
       "typedRoutes": true

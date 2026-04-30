@@ -7,15 +7,34 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { getProfile, saveProfile } from '../../../services/supabase-db';
+import { getProfile, saveProfile, recordFeatureChanges } from '../../../services/supabase-db';
 import { useAuth } from '../../../context/auth';
-import { transcribeAudio, parseFeatureFromTranscript } from '../../../services/openai';
+import { transcribeAudio, parseFeatureFromTranscript, mergeFeatureDescription } from '../../../services/openai';
 import VoiceRecorder from '../../../components/VoiceRecorder';
-import { Feature } from '../../../types';
+import { Feature, FeatureChange } from '../../../types';
 import { generateId } from '../../../utils/id';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../../constants/theme';
 
 const EMPTY_FEATURE = (): Feature => ({ id: generateId(), name: '', description: '', steps: [] });
+
+type DescMode = 'edit' | 'update-text' | 'update-voice';
+
+function computeFeatureChanges(oldF: Feature, newF: Feature): string[] {
+  const changes: string[] = [];
+  if (oldF.description !== newF.description) changes.push('Description updated');
+  const oldSet = new Set(oldF.steps);
+  const newSet = new Set(newF.steps);
+  for (const s of newF.steps) {
+    if (!oldSet.has(s)) changes.push(`Step added: "${s.length > 60 ? s.slice(0, 60) + '…' : s}"`);
+  }
+  for (const s of oldF.steps) {
+    if (!newSet.has(s)) changes.push(`Step removed: "${s.length > 60 ? s.slice(0, 60) + '…' : s}"`);
+  }
+  if (changes.length === 0 && oldF.steps.join('|') !== newF.steps.join('|')) {
+    changes.push('Steps reordered');
+  }
+  return changes;
+}
 
 function FeatureModal({
   visible,
@@ -30,18 +49,17 @@ function FeatureModal({
   onSave: (f: Feature) => void;
   onClose: () => void;
 }) {
+  const isEditing = feature !== null && !!feature.name;
+
   const [draft, setDraft] = useState<Feature>(feature ?? EMPTY_FEATURE());
   const [newStep, setNewStep] = useState('');
-  const [voiceMode, setVoiceMode] = useState(false);
+  const [descMode, setDescMode] = useState<DescMode>('edit');
+  const [voiceActive, setVoiceActive] = useState(false); // for new-feature voice fill
+  const [textUpdateInput, setTextUpdateInput] = useState('');
   const [transcribing, setTranscribing] = useState(false);
-
-  useCallback(() => {
-    if (visible) {
-      setDraft(feature ?? EMPTY_FEATURE());
-      setNewStep('');
-      setVoiceMode(false);
-    }
-  }, [visible, feature]);
+  const [merging, setMerging] = useState(false);
+  const [descriptionHeight, setDescriptionHeight] = useState(80);
+  const [stepInputHeight, setStepInputHeight] = useState(40);
 
   // Reset when modal opens
   const [prevVisible, setPrevVisible] = useState(false);
@@ -50,12 +68,17 @@ function FeatureModal({
     if (visible) {
       setDraft(feature ?? EMPTY_FEATURE());
       setNewStep('');
-      setVoiceMode(false);
+      setDescMode('edit');
+      setVoiceActive(false);
+      setTextUpdateInput('');
+      setDescriptionHeight(80);
+      setStepInputHeight(40);
     }
   }
 
-  async function handleVoiceComplete(uri: string) {
-    setVoiceMode(false);
+  // Voice fill (new feature only) — transcribe and parse both description + steps
+  async function handleVoiceFillComplete(uri: string) {
+    setVoiceActive(false);
     setTranscribing(true);
     try {
       const transcript = await transcribeAudio(uri);
@@ -72,6 +95,38 @@ function FeatureModal({
     }
   }
 
+  // Voice update (edit mode) — transcribe then AI-merge into existing description only
+  async function handleVoiceUpdateComplete(uri: string) {
+    setTranscribing(true);
+    try {
+      const transcript = await transcribeAudio(uri);
+      setMerging(true);
+      const merged = await mergeFeatureDescription(draft.description, transcript);
+      setDraft(d => ({ ...d, description: merged }));
+      setDescMode('edit');
+    } catch (e: any) {
+      Alert.alert('Voice Update Failed', e.message);
+    } finally {
+      setTranscribing(false);
+      setMerging(false);
+    }
+  }
+
+  async function handleTextUpdateApply() {
+    if (!textUpdateInput.trim()) return;
+    setMerging(true);
+    try {
+      const merged = await mergeFeatureDescription(draft.description, textUpdateInput.trim());
+      setDraft(d => ({ ...d, description: merged }));
+      setTextUpdateInput('');
+      setDescMode('edit');
+    } catch (e: any) {
+      Alert.alert('Update Failed', e.message);
+    } finally {
+      setMerging(false);
+    }
+  }
+
   function addStep() {
     if (!newStep.trim()) return;
     setDraft(d => ({ ...d, steps: [...d.steps, newStep.trim()] }));
@@ -82,6 +137,16 @@ function FeatureModal({
     setDraft(d => ({ ...d, steps: d.steps.filter((_, idx) => idx !== i) }));
   }
 
+  function moveStep(i: number, dir: -1 | 1) {
+    const j = i + dir;
+    if (j < 0 || j >= draft.steps.length) return;
+    setDraft(d => {
+      const steps = [...d.steps];
+      [steps[i], steps[j]] = [steps[j]!, steps[i]!];
+      return { ...d, steps };
+    });
+  }
+
   function handleSave() {
     if (!draft.name.trim()) {
       Alert.alert('Required', 'Please enter a feature name.');
@@ -90,11 +155,13 @@ function FeatureModal({
     onSave(draft);
   }
 
+  const busy = transcribing || merging;
+
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <SafeAreaView style={modal.container}>
         <View style={modal.header}>
-          <Text style={modal.title}>{feature?.id && feature.name ? 'Edit Feature' : 'New Feature'}</Text>
+          <Text style={modal.title}>{isEditing ? 'Edit Feature' : 'New Feature'}</Text>
           <TouchableOpacity onPress={onClose} style={modal.closeBtn}>
             <Ionicons name="close" size={22} color={Colors.textSecondary} />
           </TouchableOpacity>
@@ -112,71 +179,192 @@ function FeatureModal({
               autoFocus
             />
 
-            <View style={modal.descriptionHeader}>
-              <Text style={modal.label}>Description & Key Steps</Text>
-              <TouchableOpacity
-                style={[modal.voiceBtn, voiceMode && modal.voiceBtnActive]}
-                onPress={() => setVoiceMode(v => !v)}
-                disabled={transcribing}
-              >
-                <Ionicons
-                  name={voiceMode ? 'close-circle' : 'mic-outline'}
-                  size={16}
-                  color={voiceMode ? Colors.recording : Colors.primary}
-                />
-                <Text style={[modal.voiceBtnText, voiceMode && modal.voiceBtnTextActive]}>
-                  {transcribing ? 'Transcribing...' : voiceMode ? 'Cancel' : 'Voice'}
-                </Text>
-              </TouchableOpacity>
-            </View>
+            {/* Description section */}
+            {isEditing ? (
+              <>
+                <View style={modal.descriptionHeader}>
+                  <Text style={modal.label}>Description</Text>
+                  <View style={modal.modeTabRow}>
+                    {(['edit', 'update-text', 'update-voice'] as DescMode[]).map(mode => (
+                      <TouchableOpacity
+                        key={mode}
+                        style={[modal.modeTab, descMode === mode && modal.modeTabActive]}
+                        onPress={() => { setDescMode(mode); setTextUpdateInput(''); }}
+                        disabled={busy}
+                      >
+                        <Text style={[modal.modeTabText, descMode === mode && modal.modeTabTextActive]}>
+                          {mode === 'edit' ? 'Edit' : mode === 'update-text' ? 'Text' : 'Voice'}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
 
-            {voiceMode ? (
-              <View style={modal.voiceContainer}>
-                <Text style={modal.voiceHint}>
-                  Describe the feature and mention any key steps — e.g. "The buy airtime feature allows users to purchase airtime. First the user selects an amount, then confirms the transaction..."
-                </Text>
-                <VoiceRecorder onTranscriptionComplete={handleVoiceComplete} disabled={transcribing} />
-              </View>
+                {descMode === 'edit' && (
+                  <TextInput
+                    style={[modal.input, modal.textArea, { height: descriptionHeight }]}
+                    value={draft.description}
+                    onChangeText={v => setDraft(d => ({ ...d, description: v }))}
+                    onContentSizeChange={e =>
+                      setDescriptionHeight(Math.max(80, e.nativeEvent.contentSize.height + 16))
+                    }
+                    placeholder="Describe what this feature does..."
+                    placeholderTextColor={Colors.textMuted}
+                    multiline
+                    scrollEnabled={false}
+                  />
+                )}
+
+                {descMode === 'update-text' && (
+                  <View style={modal.updateSection}>
+                    <Text style={modal.updateHint}>
+                      Describe what changed or what to add — the AI will merge it with the existing description.
+                    </Text>
+                    <TextInput
+                      style={[modal.input, modal.textArea]}
+                      value={textUpdateInput}
+                      onChangeText={setTextUpdateInput}
+                      placeholder="e.g. Users can now also pay with mobile money..."
+                      placeholderTextColor={Colors.textMuted}
+                      multiline
+                      scrollEnabled={false}
+                      editable={!busy}
+                    />
+                    <TouchableOpacity
+                      style={[modal.applyBtn, busy && { opacity: 0.5 }]}
+                      onPress={handleTextUpdateApply}
+                      disabled={busy || !textUpdateInput.trim()}
+                    >
+                      {merging
+                        ? <ActivityIndicator color={Colors.white} size="small" />
+                        : <Text style={modal.applyBtnText}>Apply with AI</Text>}
+                    </TouchableOpacity>
+                  </View>
+                )}
+
+                {descMode === 'update-voice' && (
+                  <View style={modal.updateSection}>
+                    <Text style={modal.updateHint}>
+                      {transcribing
+                        ? 'Transcribing...'
+                        : merging
+                          ? 'Merging with AI...'
+                          : 'Describe what changed — the AI will merge it with the existing description.'}
+                    </Text>
+                    {busy
+                      ? <ActivityIndicator color={Colors.primary} style={{ marginVertical: Spacing.md }} />
+                      : <VoiceRecorder onTranscriptionComplete={handleVoiceUpdateComplete} disabled={busy} />}
+                  </View>
+                )}
+              </>
             ) : (
-              <TextInput
-                style={[modal.input, modal.textArea]}
-                value={draft.description}
-                onChangeText={v => setDraft(d => ({ ...d, description: v }))}
-                placeholder="Describe what this feature does and any key details..."
-                placeholderTextColor={Colors.textMuted}
-                multiline
-                numberOfLines={3}
-                editable={!transcribing}
-              />
+              <>
+                <View style={modal.descriptionHeader}>
+                  <Text style={modal.label}>Description & Key Steps</Text>
+                  <TouchableOpacity
+                    style={[modal.voiceBtn, voiceActive && modal.voiceBtnActive]}
+                    onPress={() => setVoiceActive(v => !v)}
+                    disabled={transcribing}
+                  >
+                    <Ionicons
+                      name={voiceActive ? 'close-circle' : 'mic-outline'}
+                      size={16}
+                      color={voiceActive ? Colors.recording : Colors.primary}
+                    />
+                    <Text style={[modal.voiceBtnText, voiceActive && modal.voiceBtnTextActive]}>
+                      {transcribing ? 'Transcribing...' : voiceActive ? 'Cancel' : 'Voice'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {voiceActive ? (
+                  <View style={modal.voiceContainer}>
+                    <Text style={modal.voiceHint}>
+                      Describe the feature and any key steps — e.g. "The buy airtime feature allows users to purchase airtime. First the user selects an amount, then confirms the transaction..."
+                    </Text>
+                    <VoiceRecorder onTranscriptionComplete={handleVoiceFillComplete} disabled={transcribing} />
+                  </View>
+                ) : (
+                  <TextInput
+                    style={[modal.input, modal.textArea, { height: descriptionHeight }]}
+                    value={draft.description}
+                    onChangeText={v => setDraft(d => ({ ...d, description: v }))}
+                    onContentSizeChange={e =>
+                      setDescriptionHeight(Math.max(80, e.nativeEvent.contentSize.height + 16))
+                    }
+                    placeholder="Describe what this feature does and any key details..."
+                    placeholderTextColor={Colors.textMuted}
+                    multiline
+                    scrollEnabled={false}
+                    editable={!transcribing}
+                  />
+                )}
+              </>
             )}
 
             <Text style={modal.label}>Key Flow Steps</Text>
             {draft.steps.map((step, i) => (
               <View key={i} style={modal.stepRow}>
                 <Text style={modal.stepNum}>{i + 1}</Text>
-                <Text style={modal.stepText} numberOfLines={2}>{step}</Text>
-                <TouchableOpacity onPress={() => removeStep(i)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                  <Ionicons name="close-circle" size={18} color={Colors.danger} />
-                </TouchableOpacity>
+                <Text style={modal.stepText}>{step}</Text>
+                <View style={modal.stepControls}>
+                  <TouchableOpacity
+                    onPress={() => moveStep(i, -1)}
+                    disabled={i === 0}
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  >
+                    <Ionicons
+                      name="chevron-up"
+                      size={16}
+                      color={i === 0 ? Colors.textMuted : Colors.primary}
+                    />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => moveStep(i, 1)}
+                    disabled={i === draft.steps.length - 1}
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  >
+                    <Ionicons
+                      name="chevron-down"
+                      size={16}
+                      color={i === draft.steps.length - 1 ? Colors.textMuted : Colors.primary}
+                    />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => removeStep(i)}
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  >
+                    <Ionicons name="close-circle" size={18} color={Colors.danger} />
+                  </TouchableOpacity>
+                </View>
               </View>
             ))}
 
-            <View style={modal.stepInputRow}>
+            <View style={[modal.stepInputRow, { alignItems: 'flex-end' }]}>
               <TextInput
-                style={[modal.input, { flex: 1 }]}
+                style={[modal.input, { flex: 1, height: stepInputHeight }]}
                 value={newStep}
                 onChangeText={setNewStep}
+                onContentSizeChange={e =>
+                  setStepInputHeight(Math.max(40, e.nativeEvent.contentSize.height + 16))
+                }
                 placeholder="Add a step..."
                 placeholderTextColor={Colors.textMuted}
+                multiline
+                scrollEnabled={false}
+                blurOnSubmit
                 onSubmitEditing={addStep}
-                returnKeyType="done"
               />
               <TouchableOpacity style={modal.stepAddBtn} onPress={addStep}>
                 <Ionicons name="add" size={22} color={Colors.secondary} />
               </TouchableOpacity>
             </View>
 
-            <TouchableOpacity style={[modal.saveBtn, saving && { opacity: 0.6 }]} onPress={handleSave} disabled={saving}>
+            <TouchableOpacity
+              style={[modal.saveBtn, (saving || busy) && { opacity: 0.6 }]}
+              onPress={handleSave}
+              disabled={saving || busy}
+            >
               {saving
                 ? <ActivityIndicator color={Colors.white} />
                 : <Text style={modal.saveBtnText}>Save Feature</Text>}
@@ -247,14 +435,26 @@ export default function FeaturesScreen() {
   }
 
   async function handleSave(feature: Feature) {
-    const exists = features.some(f => f.id === feature.id);
-    const updated = exists
+    const oldFeature = features.find(f => f.id === feature.id);
+    const isUpdate = !!oldFeature;
+    const updated = isUpdate
       ? features.map(f => f.id === feature.id ? feature : f)
       : [...features, feature];
     setFeatures(updated);
     setSaving(true);
     try {
       await persist(updated);
+      if (isUpdate && oldFeature) {
+        const changes = computeFeatureChanges(oldFeature, feature);
+        if (changes.length > 0) {
+          await recordFeatureChanges(id!, [{
+            featureId: feature.id,
+            featureName: feature.name,
+            changedAt: new Date().toISOString(),
+            changes,
+          }]);
+        }
+      }
     } finally {
       setSaving(false);
     }
@@ -273,9 +473,15 @@ export default function FeaturesScreen() {
       {
         text: 'Delete', style: 'destructive',
         onPress: async () => {
+          const previous = features;
           const updated = features.filter(f => f.id !== feature.id);
           setFeatures(updated);
-          await persist(updated);
+          try {
+            await persist(updated);
+          } catch (e: any) {
+            setFeatures(previous);
+            Alert.alert('Delete Failed', e.message ?? 'Could not delete feature. Please try again.');
+          }
         },
       },
     ]);
@@ -418,25 +624,26 @@ const modal = StyleSheet.create({
     paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
     color: Colors.text, fontSize: FontSize.sm, borderWidth: 1, borderColor: Colors.border,
   },
-  textArea: { minHeight: 80, textAlignVertical: 'top', paddingTop: Spacing.sm },
-  stepRow: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.sm,
-    padding: Spacing.sm, borderWidth: 1, borderColor: Colors.border,
+  textArea: { textAlignVertical: 'top', paddingTop: Spacing.sm, minHeight: 80 },
+  descriptionHeader: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: Spacing.xs,
   },
-  stepNum: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.primary, width: 20, textAlign: 'center' },
-  stepText: { flex: 1, fontSize: FontSize.sm, color: Colors.text },
-  stepInputRow: { flexDirection: 'row', gap: Spacing.sm, alignItems: 'center' },
-  stepAddBtn: {
-    width: 40, height: 40, borderRadius: BorderRadius.sm,
-    backgroundColor: Colors.secondary + '33', alignItems: 'center', justifyContent: 'center',
+  modeTabRow: { flexDirection: 'row', gap: 4 },
+  modeTab: {
+    paddingHorizontal: Spacing.sm, paddingVertical: 4,
+    borderRadius: BorderRadius.full, backgroundColor: Colors.surfaceAlt,
+    borderWidth: 1, borderColor: Colors.border,
   },
-  saveBtn: {
-    backgroundColor: Colors.primary, borderRadius: BorderRadius.md,
-    padding: Spacing.md, alignItems: 'center', marginTop: Spacing.md,
+  modeTabActive: { backgroundColor: Colors.primary + '33', borderColor: Colors.primary },
+  modeTabText: { fontSize: FontSize.xs, fontWeight: '600', color: Colors.textMuted },
+  modeTabTextActive: { color: Colors.primary },
+  updateSection: { gap: Spacing.sm },
+  updateHint: { fontSize: FontSize.xs, color: Colors.textMuted, lineHeight: 18, fontStyle: 'italic' },
+  applyBtn: {
+    backgroundColor: Colors.primary, borderRadius: BorderRadius.sm,
+    padding: Spacing.sm, alignItems: 'center',
   },
-  saveBtnText: { color: Colors.white, fontWeight: '700', fontSize: FontSize.md },
-  descriptionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: Spacing.xs },
+  applyBtnText: { color: Colors.white, fontWeight: '700', fontSize: FontSize.sm },
   voiceBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: Colors.primary + '22', borderRadius: BorderRadius.sm,
@@ -447,4 +654,22 @@ const modal = StyleSheet.create({
   voiceBtnTextActive: { color: Colors.recording },
   voiceContainer: { gap: Spacing.sm },
   voiceHint: { fontSize: FontSize.xs, color: Colors.textMuted, lineHeight: 18, fontStyle: 'italic' },
+  stepRow: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm,
+    backgroundColor: Colors.surfaceAlt, borderRadius: BorderRadius.sm,
+    padding: Spacing.sm, borderWidth: 1, borderColor: Colors.border,
+  },
+  stepNum: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.primary, width: 20, textAlign: 'center', marginTop: 2 },
+  stepText: { flex: 1, fontSize: FontSize.sm, color: Colors.text },
+  stepControls: { flexDirection: 'column', alignItems: 'center', gap: 2 },
+  stepInputRow: { flexDirection: 'row', gap: Spacing.sm, alignItems: 'center' },
+  stepAddBtn: {
+    width: 40, height: 40, borderRadius: BorderRadius.sm,
+    backgroundColor: Colors.secondary + '33', alignItems: 'center', justifyContent: 'center',
+  },
+  saveBtn: {
+    backgroundColor: Colors.primary, borderRadius: BorderRadius.md,
+    padding: Spacing.md, alignItems: 'center', marginTop: Spacing.md,
+  },
+  saveBtnText: { color: Colors.white, fontWeight: '700', fontSize: FontSize.md },
 });

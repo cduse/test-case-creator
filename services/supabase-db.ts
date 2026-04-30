@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
-import { AppProfile, Feature, TestCase, UserType } from '../types';
+import { AppProfile, Feature, FeatureChange, TestCase, UserType } from '../types';
 
 // ─── In-Memory Cache ─────────────────────────────────────────────────────────
 
@@ -22,6 +22,36 @@ function bustPrefix(prefix: string) {
 
 function stepsKey(featureId: string) { return `feature_steps_${featureId}`; }
 function contextKey(productId: string) { return `context_summary_${productId}`; }
+function contextGeneratedAtKey(productId: string) { return `context_generated_at_${productId}`; }
+function featureChangesKey(productId: string) { return `feature_changes_${productId}`; }
+function tcVerifiedAtMapKey(productId: string) { return `tc_verified_at_map_${productId}`; }
+
+export async function setContextGeneratedAt(productId: string): Promise<void> {
+  await AsyncStorage.setItem(contextGeneratedAtKey(productId), new Date().toISOString());
+}
+
+export async function recordFeatureChanges(productId: string, newChanges: FeatureChange[]): Promise<void> {
+  if (newChanges.length === 0) return;
+  const key = featureChangesKey(productId);
+  const existing: FeatureChange[] = JSON.parse((await AsyncStorage.getItem(key)) ?? '[]');
+  const combined = [...existing, ...newChanges].slice(-100);
+  await AsyncStorage.setItem(key, JSON.stringify(combined));
+}
+
+export async function getFeatureChanges(productId: string): Promise<FeatureChange[]> {
+  return JSON.parse((await AsyncStorage.getItem(featureChangesKey(productId))) ?? '[]');
+}
+
+export async function setTestCaseVerifiedAt(productId: string, testCaseId: string): Promise<void> {
+  const key = tcVerifiedAtMapKey(productId);
+  const map: Record<string, string> = JSON.parse((await AsyncStorage.getItem(key)) ?? '{}');
+  map[testCaseId] = new Date().toISOString();
+  await AsyncStorage.setItem(key, JSON.stringify(map));
+}
+
+export async function getTestCaseVerifiedAtMap(productId: string): Promise<Record<string, string>> {
+  return JSON.parse((await AsyncStorage.getItem(tcVerifiedAtMapKey(productId))) ?? '{}');
+}
 
 // ─── Supabase Settings helpers (user types — org-shared, survives reinstall) ─
 
@@ -88,7 +118,7 @@ export async function getProfiles(): Promise<AppProfile[]> {
   const [{ data: allFeatures }, { data: allSettings }] = await Promise.all([
     supabase
       .from('features')
-      .select('id, title, description, product_id')
+      .select('id, title, description, product_id, key_flow_steps')
       .in('product_id', productIds)
       .is('deleted_at', null)
       .order('created_at', { ascending: true }),
@@ -118,17 +148,24 @@ export async function getProfiles(): Promise<AppProfile[]> {
       const rawFeatures = featuresByProduct[p.id] ?? [];
       const features: Feature[] = await Promise.all(
         rawFeatures.map(async (f) => {
-          const stepsJson = await AsyncStorage.getItem(stepsKey(f.id));
+          const dbSteps: string[] = Array.isArray(f.key_flow_steps) ? f.key_flow_steps : [];
+          // Fall back to AsyncStorage for features saved before migration 051
+          const steps = dbSteps.length > 0
+            ? dbSteps
+            : JSON.parse((await AsyncStorage.getItem(stepsKey(f.id))) ?? '[]');
           return {
             id: f.id,
             name: f.title,
             description: f.description ?? '',
-            steps: stepsJson ? JSON.parse(stepsJson) : [],
+            steps,
           };
         })
       );
       const userTypes = userTypesByProduct[p.id] ?? [];
-      const contextSummary = (await AsyncStorage.getItem(contextKey(p.id))) ?? undefined;
+      const [contextSummary, contextGeneratedAt] = await Promise.all([
+        AsyncStorage.getItem(contextKey(p.id)),
+        AsyncStorage.getItem(contextGeneratedAtKey(p.id)),
+      ]);
       return {
         id: p.id,
         name: p.name,
@@ -136,6 +173,7 @@ export async function getProfiles(): Promise<AppProfile[]> {
         features,
         userTypes,
         contextSummary: contextSummary ?? undefined,
+        contextGeneratedAt: contextGeneratedAt ?? undefined,
         createdAt: p.created_at,
         updatedAt: p.updated_at ?? p.created_at,
       } satisfies AppProfile;
@@ -164,7 +202,10 @@ export async function getProfile(id: string): Promise<AppProfile | null> {
     getFeaturesForProduct(p.id),
     getUserTypes(p.id, p.organization_id),
   ]);
-  const contextSummary = (await AsyncStorage.getItem(contextKey(p.id))) ?? undefined;
+  const [contextSummary, contextGeneratedAt] = await Promise.all([
+    AsyncStorage.getItem(contextKey(p.id)),
+    AsyncStorage.getItem(contextGeneratedAtKey(p.id)),
+  ]);
 
   const profile: AppProfile = {
     id: p.id,
@@ -173,6 +214,7 @@ export async function getProfile(id: string): Promise<AppProfile | null> {
     features,
     userTypes,
     contextSummary: contextSummary ?? undefined,
+    contextGeneratedAt: contextGeneratedAt ?? undefined,
     createdAt: p.created_at,
     updatedAt: p.updated_at ?? p.created_at,
   };
@@ -216,10 +258,15 @@ export async function saveProfile(
   const updatedFeatures = profile.features.filter(f => existingIds.has(f.id));
 
   await Promise.all([
-    // Batch soft-delete removed features
+    // Batch soft-delete removed features via SECURITY DEFINER RPC (bypasses
+    // RLS WITH CHECK conflicts, mirrors the web app's service-role pattern)
     toDelete.length
-      ? supabase.from('features').update({ deleted_at: now, deleted_by: userId })
-          .in('id', toDelete.map(f => f.id))
+      ? supabase.rpc('mobile_soft_delete_features', {
+          p_feature_ids: toDelete.map(f => f.id),
+          p_user_id: userId,
+        }).then(({ error }) => {
+          if (error) throw new Error(`Failed to delete features: ${error.message}`);
+        })
       : Promise.resolve(),
 
     // Batch insert new features
@@ -231,9 +278,12 @@ export async function saveProfile(
             organization_id: organizationId,
             title: f.name,
             description: f.description,
+            key_flow_steps: f.steps,
             created_by: userId,
           }))
-        )
+        ).then(({ error }) => {
+          if (error) throw new Error(`Failed to insert features: ${error.message}`);
+        })
       : Promise.resolve(),
 
     // Batch update existing features
@@ -245,13 +295,16 @@ export async function saveProfile(
             organization_id: organizationId,
             title: f.name,
             description: f.description,
+            key_flow_steps: f.steps,
             updated_at: now,
           })),
           { onConflict: 'id' }
-        )
+        ).then(({ error }) => {
+          if (error) throw new Error(`Failed to update features: ${error.message}`);
+        })
       : Promise.resolve(),
 
-    // Persist feature steps locally (AsyncStorage, non-blocking)
+    // Mirror steps to AsyncStorage for offline access
     ...profile.features.map(f =>
       AsyncStorage.setItem(stepsKey(f.id), JSON.stringify(f.steps))
     ),
@@ -285,7 +338,7 @@ export async function deleteProfile(id: string, userId: string): Promise<void> {
 async function getFeaturesForProduct(productId: string): Promise<Feature[]> {
   const { data } = await supabase
     .from('features')
-    .select('id, title, description')
+    .select('id, title, description, key_flow_steps')
     .eq('product_id', productId)
     .is('deleted_at', null)
     .order('created_at', { ascending: true });
@@ -294,12 +347,15 @@ async function getFeaturesForProduct(productId: string): Promise<Feature[]> {
 
   return Promise.all(
     data.map(async (f) => {
-      const stepsJson = await AsyncStorage.getItem(stepsKey(f.id));
+      const dbSteps: string[] = Array.isArray(f.key_flow_steps) ? f.key_flow_steps : [];
+      const steps = dbSteps.length > 0
+        ? dbSteps
+        : JSON.parse((await AsyncStorage.getItem(stepsKey(f.id))) ?? '[]');
       return {
         id: f.id,
         name: f.title,
         description: f.description ?? '',
-        steps: stepsJson ? JSON.parse(stepsJson) : [],
+        steps,
       } satisfies Feature;
     })
   );
@@ -408,13 +464,13 @@ export async function saveTestCase(
 }
 
 export async function deleteTestCase(id: string, userId: string): Promise<void> {
-  // Need product_id for cache invalidation before we delete
   const tc = await getTestCase(id);
 
-  await supabase.from('test_cases').update({
-    deleted_at: new Date().toISOString(),
-    deleted_by: userId,
-  }).eq('id', id);
+  const { error } = await supabase.rpc('mobile_soft_delete_test_case', {
+    p_test_case_id: id,
+    p_user_id: userId,
+  });
+  if (error) throw new Error(`Failed to delete test case: ${error.message}`);
 
   bust(`test_case_${id}`);
   if (tc) bust(`test_cases_${tc.appProfileId}`, 'test_cases_all');

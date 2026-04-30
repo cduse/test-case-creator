@@ -31,25 +31,27 @@ function NavigationGate() {
   }
 
   return (
-    <Stack
-      screenOptions={{
-        headerStyle: { backgroundColor: Colors.surface },
-        headerTintColor: Colors.text,
-        headerTitleStyle: { fontWeight: '600' },
-        contentStyle: { backgroundColor: Colors.background },
-        animation: 'slide_from_right',
-      }}
-    >
-      <Stack.Screen name="login" options={{ headerShown: false }} />
-      <Stack.Screen name="index" options={{ title: 'Testify' }} />
-      <Stack.Screen name="settings" options={{ title: 'Settings', presentation: 'modal' }} />
-      <Stack.Screen name="profile/create" options={{ title: 'New Product' }} />
-      <Stack.Screen name="profile/[id]/index" options={{ title: 'Product' }} />
-      <Stack.Screen name="profile/[id]/features" options={{ title: 'Features' }} />
-      <Stack.Screen name="profile/[id]/user-types" options={{ title: 'User Types' }} />
-      <Stack.Screen name="testcase/create" options={{ title: 'New Test Case' }} />
-      <Stack.Screen name="testcase/[id]" options={{ title: 'Test Case' }} />
-    </Stack>
+    <View style={{ flex: 1, backgroundColor: Colors.background }}>
+      <Stack
+        screenOptions={{
+          headerStyle: { backgroundColor: Colors.surface },
+          headerTintColor: Colors.text,
+          headerTitleStyle: { fontWeight: '600' },
+          contentStyle: { backgroundColor: Colors.background },
+          animation: 'slide_from_right',
+        }}
+      >
+        <Stack.Screen name="login" options={{ headerShown: false }} />
+        <Stack.Screen name="index" options={{ title: 'Testify' }} />
+        <Stack.Screen name="settings" options={{ title: 'Settings', presentation: 'modal' }} />
+        <Stack.Screen name="profile/create" options={{ title: 'New Product' }} />
+        <Stack.Screen name="profile/[id]/index" options={{ title: 'Product' }} />
+        <Stack.Screen name="profile/[id]/features" options={{ title: 'Features' }} />
+        <Stack.Screen name="profile/[id]/user-types" options={{ title: 'User Types' }} />
+        <Stack.Screen name="testcase/create" options={{ title: 'New Test Case' }} />
+        <Stack.Screen name="testcase/[id]" options={{ title: 'Test Case' }} />
+      </Stack>
+    </View>
   );
 }
 
@@ -62,7 +64,7 @@ export default function RootLayout() {
 
   return (
     <AuthProvider>
-      <StatusBar style="light" />
+      <StatusBar style="light" backgroundColor={Colors.background} />
       <NavigationGate />
     </AuthProvider>
   );

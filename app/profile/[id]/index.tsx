@@ -6,24 +6,36 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import {
   getProfile, getTestCases, deleteTestCase, saveProfile, deleteProfile,
+  getFeatureChanges, getTestCaseVerifiedAtMap, setContextGeneratedAt,
 } from '../../../services/supabase-db';
 import { formatTestCasesAsText, buildAutomationExport } from '../../../services/storage';
 import { useAuth } from '../../../context/auth';
 import { generateContextSummary, hasApiKey } from '../../../services/openai';
-import { AppProfile, TestCase } from '../../../types';
+import { AppProfile, FeatureChange, TestCase } from '../../../types';
 import { Colors, Spacing, FontSize, BorderRadius } from '../../../constants/theme';
 
-function TestCaseRow({ tc, onPress, onDelete }: {
-  tc: TestCase; onPress: () => void; onDelete: () => void;
+function TestCaseRow({ tc, needsRefinement, onPress, onDelete }: {
+  tc: TestCase;
+  needsRefinement: boolean;
+  onPress: () => void;
+  onDelete: () => void;
 }) {
   return (
     <TouchableOpacity style={styles.tcRow} onPress={onPress} onLongPress={onDelete} activeOpacity={0.7}>
       <View style={styles.tcRowContent}>
-        <Text style={styles.tcTitle} numberOfLines={2}>{tc.title}</Text>
+        <View style={styles.tcTitleRow}>
+          <Text style={styles.tcTitle} numberOfLines={2}>{tc.title}</Text>
+          {needsRefinement && (
+            <View style={styles.refineBadge}>
+              <Ionicons name="refresh-circle" size={12} color={Colors.warning} />
+              <Text style={styles.refineBadgeText}>Refine</Text>
+            </View>
+          )}
+        </View>
         <View style={styles.tcMeta}>
           {tc.userType && <Text style={styles.tcTag}>{tc.userType}</Text>}
           {tc.feature && <Text style={[styles.tcTag, styles.tcFeatureTag]}>{tc.feature}</Text>}
@@ -67,13 +79,27 @@ export default function ProfileDetailScreen() {
   const [testCases, setTestCases] = useState<TestCase[]>([]);
   const [generatingContext, setGeneratingContext] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
+  const [featureChanges, setFeatureChanges] = useState<FeatureChange[]>([]);
+  const [tcVerifiedAtMap, setTcVerifiedAtMap] = useState<Record<string, string>>({});
 
   useFocusEffect(
     useCallback(() => {
       if (!id) return;
       getProfile(id).then(p => setProfile(p));
       getTestCases(id).then(tc => setTestCases(tc));
+      getFeatureChanges(id).then(c => setFeatureChanges(c));
+      getTestCaseVerifiedAtMap(id).then(m => setTcVerifiedAtMap(m));
     }, [id])
+  );
+
+  function tcNeedsRefinement(tc: TestCase): boolean {
+    const verifiedAt = tcVerifiedAtMap[tc.id] ?? tc.createdAt;
+    return featureChanges.some(c => c.featureName === tc.feature && c.changedAt > verifiedAt);
+  }
+
+  const contextIsStale = !!(
+    profile?.contextSummary &&
+    profile.updatedAt > (profile.contextGeneratedAt ?? '')
   );
 
   async function handleGenerateContext() {
@@ -90,7 +116,10 @@ export default function ProfileDetailScreen() {
       const summary = await generateContextSummary(profile);
       const updated = { ...profile, contextSummary: summary, updatedAt: new Date().toISOString() };
       await saveProfile(updated, user!.id, user!.organizationId);
-      setProfile(updated);
+      // Set contextGeneratedAt AFTER saveProfile so it's >= DB updated_at
+      await setContextGeneratedAt(profile.id);
+      const generatedAt = new Date().toISOString();
+      setProfile({ ...updated, contextGeneratedAt: generatedAt });
       setContextOpen(true);
     } catch (e: any) {
       Alert.alert('Error', e.message);
@@ -105,8 +134,12 @@ export default function ProfileDetailScreen() {
       {
         text: 'Delete', style: 'destructive',
         onPress: async () => {
-          await deleteTestCase(tc.id, user!.id);
-          setTestCases(prev => prev.filter(t => t.id !== tc.id));
+          try {
+            await deleteTestCase(tc.id, user!.id);
+            setTestCases(prev => prev.filter(t => t.id !== tc.id));
+          } catch (e: any) {
+            Alert.alert('Delete Failed', e.message ?? 'Could not delete test case. Please try again.');
+          }
         },
       },
     ]);
@@ -214,7 +247,15 @@ export default function ProfileDetailScreen() {
             onPress={() => setContextOpen(!contextOpen)}
             activeOpacity={0.7}
           >
-            <Text style={styles.sectionTitle}>AI Context</Text>
+            <View style={styles.contextTitleRow}>
+              <Text style={styles.sectionTitle}>AI Context</Text>
+              {contextIsStale && (
+                <View style={styles.staleBadge}>
+                  <Ionicons name="warning" size={11} color={Colors.warning} />
+                  <Text style={styles.staleBadgeText}>Outdated</Text>
+                </View>
+              )}
+            </View>
             <View style={styles.sectionHeaderRight}>
               <TouchableOpacity
                 style={[styles.contextBtn, generatingContext && styles.contextBtnLoading]}
@@ -240,6 +281,16 @@ export default function ProfileDetailScreen() {
               />
             </View>
           </TouchableOpacity>
+
+          {contextIsStale && (
+            <View style={styles.staleNotice}>
+              <Ionicons name="warning-outline" size={14} color={Colors.warning} />
+              <Text style={styles.staleNoticeText}>
+                Features or user types changed since context was last generated. Regenerate for better test case quality.
+              </Text>
+            </View>
+          )}
+
           {contextOpen && (
             <View style={styles.sectionBody}>
               {profile.contextSummary ? (
@@ -294,6 +345,7 @@ export default function ProfileDetailScreen() {
                 <TestCaseRow
                   key={tc.id}
                   tc={tc}
+                  needsRefinement={tcNeedsRefinement(tc)}
                   onPress={() => router.push(`/testcase/${tc.id}`)}
                   onDelete={() => handleDeleteTestCase(tc)}
                 />
@@ -355,6 +407,21 @@ const styles = StyleSheet.create({
   sectionBody: { paddingHorizontal: Spacing.md, paddingBottom: Spacing.md, gap: Spacing.sm },
   divider: { height: 1, backgroundColor: Colors.border, marginHorizontal: Spacing.md },
 
+  contextTitleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
+  staleBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: Colors.warning + '22', borderRadius: BorderRadius.full,
+    paddingHorizontal: 6, paddingVertical: 2,
+  },
+  staleBadgeText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.warning },
+  staleNotice: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.xs,
+    marginHorizontal: Spacing.md, marginBottom: Spacing.sm,
+    backgroundColor: Colors.warning + '15', borderRadius: BorderRadius.sm,
+    padding: Spacing.sm, borderWidth: 1, borderColor: Colors.warning + '44',
+  },
+  staleNoticeText: { flex: 1, fontSize: FontSize.xs, color: Colors.warning, lineHeight: 18 },
+
   navRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     padding: Spacing.md,
@@ -407,7 +474,14 @@ const styles = StyleSheet.create({
     padding: Spacing.md, flexDirection: 'row', alignItems: 'center',
   },
   tcRowContent: { flex: 1, gap: 6 },
-  tcTitle: { fontSize: FontSize.sm, fontWeight: '600', color: Colors.text, lineHeight: 20 },
+  tcTitleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.xs },
+  tcTitle: { flex: 1, fontSize: FontSize.sm, fontWeight: '600', color: Colors.text, lineHeight: 20 },
+  refineBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: Colors.warning + '22', borderRadius: BorderRadius.full,
+    paddingHorizontal: 6, paddingVertical: 2, marginTop: 2,
+  },
+  refineBadgeText: { fontSize: FontSize.xs, fontWeight: '700', color: Colors.warning },
   tcMeta: { flexDirection: 'row', gap: Spacing.xs, flexWrap: 'wrap', alignItems: 'center' },
   tcTag: {
     fontSize: FontSize.xs, color: Colors.primary, backgroundColor: Colors.primary + '22',

@@ -47,6 +47,13 @@ export interface TestCase {
   createdAt: string;
 }
 
+export interface FeatureChange {
+  featureId: string;
+  featureName: string;
+  changedAt: string;
+  changes: string[];
+}
+
 export interface AppProfile {
   id: string;
   name: string;
@@ -54,6 +61,7 @@ export interface AppProfile {
   userTypes: UserType[];
   features: Feature[];
   contextSummary?: string;
+  contextGeneratedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
