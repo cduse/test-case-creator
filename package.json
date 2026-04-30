@@ -3,9 +3,10 @@
   "version": "1.0.0",
   "main": "expo-router/entry",
   "scripts": {
-    "start": "expo start",
+    "start": "node node_modules/expo/bin/cli start",
+    "start:clear": "node node_modules/expo/bin/cli start --clear",
     "android": "expo run:android",
-    "web": "expo start --web",
+    "web": "node node_modules/expo/bin/cli start --web",
     "postinstall": "node scripts/create-assets.js",
     "create-assets": "node scripts/create-assets.js"
   },
