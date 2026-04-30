@@ -163,48 +163,78 @@ export default function ProfileDetailScreen() {
     }
 
     const ac = new AbortController();
-    setGenState({ stage: 'planning', current: 0, total: 0, currentTitle: 'Planning test suite…', ac });
+    setGenState({ stage: 'planning', current: 0, total: 0, currentTitle: 'Checking coverage…', ac });
 
     try {
+      // Pass existing test cases so the planner only identifies gaps
+      const existing = testCases.map(tc => ({
+        title: tc.title,
+        feature: tc.feature,
+        userType: tc.userType,
+        testType: tc.testType,
+      }));
+
       const generated = await generateFullTestSuite(
         profile,
         (p: GenerationProgress) => setGenState(prev => prev ? { ...prev, ...p } : null),
-        ac.signal
-      );
-
-      setGenState(prev => prev
-        ? { ...prev, stage: 'generating', currentTitle: 'Saving test cases…', current: generated.length, total: generated.length }
-        : null
+        ac.signal,
+        existing
       );
 
       const now = new Date().toISOString();
       const saved: TestCase[] = [];
-      for (let i = 0; i < generated.length; i++) {
-        const g = generated[i];
-        const tc: TestCase = {
-          id: `tc_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 7)}`,
-          appProfileId: profile.id,
-          ...g,
-          createdAt: now,
-        };
-        await saveTestCase(tc, user!.id, user!.organizationId, profile.features);
-        saved.push(tc);
+
+      if (generated.length > 0) {
+        setGenState(prev => prev
+          ? { ...prev, stage: 'generating', currentTitle: 'Saving new test cases…', current: generated.length, total: generated.length }
+          : null
+        );
+
+        for (let i = 0; i < generated.length; i++) {
+          if (ac.signal.aborted) throw new Error('Cancelled');
+          const tc: TestCase = {
+            id: `tc_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 7)}`,
+            appProfileId: profile.id,
+            ...generated[i],
+            createdAt: now,
+          };
+          await saveTestCase(tc, user!.id, user!.organizationId, profile.features);
+          saved.push(tc);
+        }
+        setTestCases(prev => [...saved, ...prev]);
       }
 
-      setTestCases(prev => [...saved, ...prev]);
-      setGenState(null);
-      Alert.alert('Done', `Generated ${saved.length} test case${saved.length !== 1 ? 's' : ''}.`);
+      // Now update stale existing test cases
+      const stale = testCases.filter(tc => tcNeedsRefinement(tc));
+      if (!ac.signal.aborted && stale.length > 0) {
+        await runUpdateStale(profile, ac);
+      } else {
+        setGenState(null);
+      }
+
+      if (!ac.signal.aborted) {
+        const newCount = saved.length;
+        const updatedCount = stale.length;
+        if (newCount === 0 && updatedCount === 0) {
+          Alert.alert('Up to Date', 'All test cases are already covered and up to date.');
+        } else {
+          const parts = [];
+          if (newCount > 0) parts.push(`${newCount} new test case${newCount !== 1 ? 's' : ''} added`);
+          if (updatedCount > 0) parts.push(`${updatedCount} updated`);
+          Alert.alert('Done', parts.join(', ') + '.');
+        }
+      }
     } catch (e: any) {
       setGenState(null);
       if (e.message !== 'Cancelled') Alert.alert('Error', e.message);
     }
   }
 
-  async function runUpdateStale(currentProfile: AppProfile) {
+  async function runUpdateStale(currentProfile: AppProfile, existingAc?: AbortController) {
     const stale = testCases.filter(tc => tcNeedsRefinement(tc));
     if (stale.length === 0) return;
 
-    const ac = new AbortController();
+    const ac = existingAc ?? new AbortController();
     setGenState({ stage: 'updating', current: 0, total: stale.length, currentTitle: 'Preparing…', ac });
 
     const updatedList = [...testCases];
@@ -231,7 +261,7 @@ export default function ProfileDetailScreen() {
 
     setTestCases(updatedList);
     getTestCaseVerifiedAtMap(profile!.id).then(m => setTcVerifiedAtMap(m));
-    setGenState(null);
+    if (!existingAc) setGenState(null);
   }
 
   async function handleUpdateStale() {

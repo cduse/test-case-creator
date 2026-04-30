@@ -335,12 +335,30 @@ interface PlannedScenario {
   priority: string;
 }
 
+export type ExistingTestCaseSummary = {
+  title: string;
+  feature: string;
+  userType?: string;
+  testType?: string;
+};
+
 export async function generateFullTestSuite(
   profile: AppProfile,
   onProgress: (p: GenerationProgress) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  existingTestCases?: ExistingTestCaseSummary[]
 ): Promise<GeneratedTestCase[]> {
-  onProgress({ stage: 'planning', current: 0, total: 0, currentTitle: 'Planning test suite…' });
+  onProgress({ stage: 'planning', current: 0, total: 0, currentTitle: 'Checking coverage…' });
+
+  const hasExisting = existingTestCases && existingTestCases.length > 0;
+
+  const existingBlock = hasExisting
+    ? `\nEXISTING TEST CASES (already covered — do NOT re-plan these unless coverage is genuinely missing):\n${
+        existingTestCases!.map((tc, i) =>
+          `${i + 1}. [${tc.feature}${tc.userType ? ` / ${tc.userType}` : ''} / ${tc.testType ?? 'functional'}] ${tc.title}`
+        ).join('\n')
+      }\n\nOnly list scenarios that are MISSING from the existing coverage above. If all scenarios are already covered, return an empty "scenarios" array.`
+    : '';
 
   const planData = await openaiPost('chat/completions', {
     model: 'gpt-4o',
@@ -363,7 +381,7 @@ Coverage rules:
 - Functional tests for each distinct user flow (per user type where flows differ)
 - Negative / edge-case tests for validation, error handling, and boundary conditions
 - Critical regression tests for the most important end-to-end journeys
-
+${existingBlock}
 Return ONLY valid JSON: { "scenarios": [ { "title": "...", "description": "...", "feature": "...", "userType": null, "testType": "...", "priority": "..." } ] }`,
       },
     ],
