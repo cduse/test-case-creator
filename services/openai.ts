@@ -319,6 +319,104 @@ Update only the parts of the test case affected by these changes. Keep the same 
   return parseGeneratedCase(root);
 }
 
+export type GenerationProgress = {
+  stage: 'planning' | 'generating' | 'updating';
+  current: number;
+  total: number;
+  currentTitle: string;
+};
+
+interface PlannedScenario {
+  title: string;
+  description: string;
+  feature: string;
+  userType?: string | null;
+  testType: string;
+  priority: string;
+}
+
+export async function generateFullTestSuite(
+  profile: AppProfile,
+  onProgress: (p: GenerationProgress) => void,
+  signal?: AbortSignal
+): Promise<GeneratedTestCase[]> {
+  onProgress({ stage: 'planning', current: 0, total: 0, currentTitle: 'Planning test suite…' });
+
+  const planData = await openaiPost('chat/completions', {
+    model: 'gpt-4o',
+    messages: [
+      { role: 'system', content: buildSystemPrompt(profile) },
+      {
+        role: 'user',
+        content: `Plan a comprehensive test suite for this app that achieves full coverage.
+
+For each scenario provide:
+- title: concise test case title
+- description: one sentence on what it validates
+- feature: which feature it targets
+- userType: specific user type name if the scenario is user-type-specific, otherwise null
+- testType: "regression" | "smoke" | "functional" | "negative" | "sanity"
+- priority: "critical" | "high" | "medium" | "low"
+
+Coverage rules:
+- At least one smoke test per feature
+- Functional tests for each distinct user flow (per user type where flows differ)
+- Negative / edge-case tests for validation, error handling, and boundary conditions
+- Critical regression tests for the most important end-to-end journeys
+
+Return ONLY valid JSON: { "scenarios": [ { "title": "...", "description": "...", "feature": "...", "userType": null, "testType": "...", "priority": "..." } ] }`,
+      },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.2,
+  });
+
+  if (signal?.aborted) throw new Error('Cancelled');
+
+  const planned: PlannedScenario[] = JSON.parse(planData.choices[0].message.content).scenarios ?? [];
+
+  const results: GeneratedTestCase[] = [];
+
+  for (let i = 0; i < planned.length; i++) {
+    if (signal?.aborted) throw new Error('Cancelled');
+
+    const s = planned[i];
+    onProgress({ stage: 'generating', current: i + 1, total: planned.length, currentTitle: s.title });
+
+    try {
+      const data = await openaiPost('chat/completions', {
+        model: 'gpt-4o',
+        messages: [
+          { role: 'system', content: buildSystemPrompt(profile) },
+          {
+            role: 'user',
+            content: `Generate a complete, detailed test case for this specific scenario.
+
+Title: ${s.title}
+Description: ${s.description}
+Feature: ${s.feature}
+User Type: ${s.userType ?? 'General / any user type'}
+Test Type: ${s.testType}
+Priority: ${s.priority}
+
+Follow all rules in your instructions. Return a single complete JSON test case object (not wrapped in an array).`,
+          },
+        ],
+        response_format: { type: 'json_object' },
+        temperature: 0.2,
+      });
+
+      if (signal?.aborted) throw new Error('Cancelled');
+      results.push(parseGeneratedCase(JSON.parse(data.choices[0].message.content)));
+    } catch (e: any) {
+      if (e.message === 'Cancelled') throw e;
+      // Skip malformed individual responses and continue
+    }
+  }
+
+  return results;
+}
+
 export async function generateContextSummary(profile: Omit<AppProfile, 'contextSummary'>): Promise<string> {
   const userTypesText = profile.userTypes.map(ut => `- ${ut.name}: ${ut.description}`).join('\n');
   const featuresText = profile.features.map(f => {
