@@ -468,7 +468,7 @@ export default function FeaturesScreen() {
   }
 
   function handleDelete(feature: Feature) {
-    Alert.alert('Delete Feature', `Delete "${feature.name}"?`, [
+    Alert.alert('Delete Feature', `Delete "${feature.name}"? Test cases covering this feature will be flagged for review.`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete', style: 'destructive',
@@ -478,6 +478,12 @@ export default function FeaturesScreen() {
           setFeatures(updated);
           try {
             await persist(updated);
+            await recordFeatureChanges(id!, [{
+              featureId: feature.id,
+              featureName: feature.name,
+              changedAt: new Date().toISOString(),
+              changes: ['Feature deleted — review or remove related test cases'],
+            }]);
           } catch (e: any) {
             setFeatures(previous);
             Alert.alert('Delete Failed', e.message ?? 'Could not delete feature. Please try again.');

@@ -24,8 +24,17 @@ function ProfileCard({ profile, onPress, onDelete }: {
   onPress: () => void;
   onDelete: () => void;
 }) {
+  const contextIsStale = !!(
+    profile.contextSummary &&
+    profile.updatedAt > (profile.contextGeneratedAt ?? '')
+  );
+
   return (
-    <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.7}>
+    <TouchableOpacity
+      style={[styles.card, contextIsStale && styles.cardStale]}
+      onPress={onPress}
+      activeOpacity={0.7}
+    >
       <View style={styles.cardHeader}>
         <View style={styles.cardIcon}>
           <Text style={styles.cardIconText}>{profile.name.charAt(0).toUpperCase()}</Text>
@@ -41,7 +50,11 @@ function ProfileCard({ profile, onPress, onDelete }: {
       <View style={styles.cardMeta}>
         <Pill label={`${profile.features.length} features`} color={Colors.primary} />
         <Pill label={`${profile.userTypes.length} user types`} color={Colors.secondary} />
-        {profile.contextSummary && <Pill label="AI ready" color={Colors.warning} />}
+        {contextIsStale ? (
+          <Pill label="⚠ Context outdated" color={Colors.warning} />
+        ) : profile.contextSummary ? (
+          <Pill label="AI ready" color={Colors.secondary} />
+        ) : null}
       </View>
     </TouchableOpacity>
   );
@@ -160,6 +173,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface, borderRadius: BorderRadius.md,
     padding: Spacing.md, borderWidth: 1, borderColor: Colors.border,
   },
+  cardStale: { borderColor: Colors.warning + '66' },
   cardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: Spacing.sm },
   cardIcon: {
     width: 44, height: 44, borderRadius: BorderRadius.sm,
