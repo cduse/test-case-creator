@@ -27,7 +27,11 @@ function featureChangesKey(productId: string) { return `feature_changes_${produc
 function tcVerifiedAtMapKey(productId: string) { return `tc_verified_at_map_${productId}`; }
 
 export async function setContextGeneratedAt(productId: string): Promise<void> {
-  await AsyncStorage.setItem(contextGeneratedAtKey(productId), new Date().toISOString());
+  const now = new Date().toISOString();
+  await Promise.all([
+    AsyncStorage.setItem(contextGeneratedAtKey(productId), now),
+    supabase.from('products').update({ context_generated_at: now }).eq('id', productId),
+  ]);
 }
 
 export async function recordFeatureChanges(productId: string, newChanges: FeatureChange[]): Promise<void> {
@@ -106,7 +110,7 @@ export async function getProfiles(): Promise<AppProfile[]> {
   // Fetch products + their features in 2 queries (avoids N+1)
   const { data: products, error } = await supabase
     .from('products')
-    .select('id, name, description, organization_id, created_at, updated_at')
+    .select('id, name, description, organization_id, created_at, updated_at, context_summary, context_generated_at')
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
 
@@ -162,18 +166,21 @@ export async function getProfiles(): Promise<AppProfile[]> {
         })
       );
       const userTypes = userTypesByProduct[p.id] ?? [];
-      const [contextSummary, contextGeneratedAt] = await Promise.all([
+      // Prefer Supabase values; fall back to AsyncStorage for records saved before migration 054
+      const [localSummary, localGeneratedAt] = await Promise.all([
         AsyncStorage.getItem(contextKey(p.id)),
         AsyncStorage.getItem(contextGeneratedAtKey(p.id)),
       ]);
+      const contextSummary = (p.context_summary ?? localSummary) || undefined;
+      const contextGeneratedAt = (p.context_generated_at ?? localGeneratedAt) || undefined;
       return {
         id: p.id,
         name: p.name,
         description: p.description ?? '',
         features,
         userTypes,
-        contextSummary: contextSummary ?? undefined,
-        contextGeneratedAt: contextGeneratedAt ?? undefined,
+        contextSummary,
+        contextGeneratedAt,
         createdAt: p.created_at,
         updatedAt: p.updated_at ?? p.created_at,
       } satisfies AppProfile;
@@ -191,7 +198,7 @@ export async function getProfile(id: string): Promise<AppProfile | null> {
 
   const { data: p, error } = await supabase
     .from('products')
-    .select('id, name, description, organization_id, created_at, updated_at')
+    .select('id, name, description, organization_id, created_at, updated_at, context_summary, context_generated_at')
     .eq('id', id)
     .is('deleted_at', null)
     .single();
@@ -202,10 +209,13 @@ export async function getProfile(id: string): Promise<AppProfile | null> {
     getFeaturesForProduct(p.id),
     getUserTypes(p.id, p.organization_id),
   ]);
-  const [contextSummary, contextGeneratedAt] = await Promise.all([
+  // Prefer Supabase values; fall back to AsyncStorage for records saved before migration 054
+  const [localSummary, localGeneratedAt] = await Promise.all([
     AsyncStorage.getItem(contextKey(p.id)),
     AsyncStorage.getItem(contextGeneratedAtKey(p.id)),
   ]);
+  const contextSummary = (p.context_summary ?? localSummary) || undefined;
+  const contextGeneratedAt = (p.context_generated_at ?? localGeneratedAt) || undefined;
 
   const profile: AppProfile = {
     id: p.id,
@@ -213,8 +223,8 @@ export async function getProfile(id: string): Promise<AppProfile | null> {
     description: p.description ?? '',
     features,
     userTypes,
-    contextSummary: contextSummary ?? undefined,
-    contextGeneratedAt: contextGeneratedAt ?? undefined,
+    contextSummary,
+    contextGeneratedAt,
     createdAt: p.created_at,
     updatedAt: p.updated_at ?? p.created_at,
   };
@@ -238,6 +248,7 @@ export async function saveProfile(
     description: profile.description,
     created_by: userId,
     updated_at: now,
+    ...(profile.contextSummary ? { context_summary: profile.contextSummary } : {}),
   }, { onConflict: 'id' });
   if (productError) throw new Error(`Failed to save product: ${productError.message}`);
 
